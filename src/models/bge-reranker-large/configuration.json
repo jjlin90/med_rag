@@ -1,0 +1,9 @@
+{
+    "framework": "xinference",
+    "task": "embedding",
+    "model": {
+        "type": "bge-reranker-large"
+    },
+    "allow_remote": true,
+    "pipeline": {"type": "embedding-pipeline"}
+}

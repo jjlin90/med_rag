@@ -1,0 +1,101 @@
+# ===================== Python =====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===================== 虚拟环境 =====================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ===================== IDE =====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===================== OS =====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===================== 密钥 / 环境变量 =====================
+# .env 含 LLM_API_KEY 等敏感信息，严禁提交
+.env
+.env.local
+.env.*.local
+
+# ===================== 日志 / 缓存 / 临时 =====================
+*.log
+logs/
+cache/
+*.tmp
+*.temp
+*.bak
+
+# ===================== 数据（体量大，不入库） =====================
+# 原始数据、中间产物、缓存、FAQ 语料等均为大体积文件，统一不入库
+data/
+
+# ===================== 工具/IDE 配置（非项目代码） =====================
+.cloudstudio
+
+# ===================== 向量 / 嵌入缓存 =====================
+# embeddings.json 等（cache/ 已整体屏蔽，此处双保险）
+embeddings.json
+**/embedding_cache/
+
+# ===================== 模型权重（大文件，不入库） =====================
+# 仅屏蔽权重本体，保留 config/tokenizer/README 等小文件以便说明结构
+src/models/**/*.bin
+src/models/**/*.pt
+src/models/**/*.pth
+src/models/**/*.safetensors
+src/models/**/*.onnx
+src/models/**/*.gguf
+src/models/**/*.msgpack
+src/models/**/*.tflite
+src/models/**/*.h5
+!src/models/**/*.json
+!src/models/**/*.txt
+!src/models/**/*.md
+!src/models/**/*.model
+
+# ===================== 向量库本地持久化 =====================
+cache/milvus_local/
+
+# ===================== 文档构建 =====================
+docs/_build/
+
+# ===================== Jupyter =====================
+.ipynb_checkpoints
+
+# ===================== 环境/版本管理 =====================
+.python-version
+
+# ===================== 工具自身数据（非项目代码） =====================
+.workbuddy/
