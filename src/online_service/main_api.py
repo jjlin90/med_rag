@@ -44,11 +44,19 @@ class QueryResponse(BaseModel):
     intent: str
     strategy: str
     session_id: str
+    # 降级透明化：任何一次降级都必须让调用方可见。
+    # 静默降级比直接失败更危险——前端和用户会以为这是正常质量的答案。
+    degraded: bool = False
+    degrade_level: int = 0     # 0=正常 1=同粒度降级（安全，质量未降） 2=无召回或服务故障
+    degrade_reason: str = ""
 
 class HealthResponse(BaseModel):
     status: str
     timestamp: float
     services: Dict[str, bool]
+    # 降级打点快照：l1_rate 持续偏高说明子块过滤或数据有问题；
+    # l2_error > 0 说明基础设施故障，必须告警。
+    degradation: Dict[str, Any] = {}
 
 class ChatHistoryItem(BaseModel):
     role: str
@@ -148,10 +156,17 @@ class RAGWebAPI:
 
             all_healthy = all(status.values())
 
+            # 降级打点：进程内计数器，重启清零。生产建议改为 Prometheus Counter。
+            # 关注两个比率：
+            #   l1_rate 持续偏高 → 子块过滤过严或数据分布异常，需排查入库链路
+            #   l2_error > 0     → 基础设施故障，应立即告警
+            degradation = Retrieval.get_degrade_metrics()
+
             return HealthResponse(
                 status="healthy" if all_healthy else "degraded",
                 timestamp=time.time(),
-                services=status
+                services=status,
+                degradation=degradation,
             )
 
         @self.app.post("/query", response_model=QueryResponse)
@@ -288,18 +303,22 @@ class RAGWebAPI:
                       strategy: Optional[str] = None,
                       session_id: Optional[str] = None) -> QueryResponse:
         """
-        统一查询编排（对齐 EduRag 的 IntegratedQASystem.query 主流程）：
+        统一查询编排（对齐 EduRag 双通道流程）：
 
-        1. 缓存命中 → 直接返回（最快路径）
-        2. **FAQ 优先**（Redis 一级 → MySQL 二级 BM25）→ 命中直接返回，
-           不命中才进入下一步（与 EduRag「先 BM25/FAQ 命中即返」一致）
-        3. 调用 CoreRAGSystem.generate() 执行 RAG 生成：
-           意图分类 → 策略选择 → 检索与合并 → 重排序 → 构建上下文 → LLM 生成
-           （严格对齐 EduRag 主流程图中的 RAG 生成答案六步）
-        4. 写会话历史（MySQL conversations 表，对齐 EduRag update_session_history）
-        5. 写缓存并返回（响应携带 session_id，供前端跨会话持久化）
+        通道① 快通道 · FAQ 高频问答（BM25 + Redis + MySQL）：
+          Redis 查缓存 answer:(query) → 命中直接返回
+          → jieba 分词 BM25Okapi → softmax 归一化 → best_score
+          → best_score ≥ 0.85？→ 取答案 + 回填缓存 + need_rag=False → 返回 FAQ 答案
+          → 否 → 降级到 RAG
 
-        任一环节失败均可优雅降级（FAQ 不可用 → RAG；LLM 不可用 → 兜底文案）。
+        通道② 深通道 · 专业知识问答（BGE-M3 + Milvus + Reranker）：
+          BERT 意图分类：通用知识 / 专业咨询
+          → 通用知识？→ 直接 LLM，不检索
+          → LLM 策略选择：直接检索 / 回溯 / 子查询 / HyDE
+          → 混合检索(dense+sparse) → Small-to-Big(子块→父块去重) → Reranker 精排(Top-2)
+          → Prompt 组装 → qwen-plus 流式生成
+
+        最后写 MySQL 会话历史 + 写缓存，返回响应。
         """
         start_time = time.time()
 
@@ -307,12 +326,13 @@ class RAGWebAPI:
         if session_id is None:
             session_id = ConversationStore.new_session_id()
 
-        # 1. 缓存命中（稳定键，跨重启可命中；RAG/LLM 回答缓存在 query: 命名空间）
+        # ===== 通道① 快通道：FAQ 优先（对齐 EduRag "先 BM25/FAQ 命中即返"）=====
+        # Step 1: Redis 缓存查找（对齐 EduRag "Redis 查缓存 answer:(query)"）
         cache_key = query_cache_key(question)
         if use_cache and self.cache.is_connected():
             cached_result = self.cache.get(cache_key)
             if cached_result:
-                logger.info("Cache hit")
+                logger.info(f"通用缓存命中: {question}")
                 response_time = time.time() - start_time
                 return QueryResponse(
                     answer=cached_result['answer'],
@@ -323,63 +343,95 @@ class RAGWebAPI:
                     intent=cached_result.get('intent', 'unknown'),
                     strategy=cached_result.get('strategy', strategy or 'auto'),
                     session_id=session_id,
+                    degraded=cached_result.get('degraded', False),
+                    degrade_level=cached_result.get('degrade_level', 0),
+                    degrade_reason=cached_result.get('degrade_reason', ''),
                 )
 
-        confidence = 0.0
-        intent = 'medical'
-        selected_strategy = strategy or 'auto'
-        sources = []
-        final_answer = None
+        # Step 2: FAQ BM25 检索（softmax 归一化，阈值 0.85）
+        # 不再做意图预判——EduRag 的设计是所有查询先过 FAQ 快通道，
+        # FAQ 命中则直接返回（高频标准问题不需要走昂贵 RAG），
+        # 未命中再降级到深通道。医疗问题如果恰好命中了高质量 FAQ 同样可以直接返回。
+        faq_answer, need_rag = self.faq_search.search_faq(question)
 
-        # 2. FAQ 优先（对齐 EduRag：先 BM25/FAQ，命中即返）
-        #    但先做意图预判：医疗类问题不应被 FAQ 抢答。FAQ 是基于 MySQL 文章标题的
-        #    BM25 粗检索，会误把“头痛”匹配到“声带息肉”等无关条目并返回整篇文章
-        #    （阈值 0.5 对 ~7 量级的原始 BM25 分数形同虚设）。医疗问题统一走 RAG
-        #    （稠密检索 + 重排，准确性远高于标题 BM25），避免答非所问。
-        pre_intent = 'medical'
-        try:
-            pre_intent = self.intent_classifier.predict(question).get('intent', 'medical')
-        except Exception:
-            # 分类失败则保守地走 RAG（不冒险用可能错配的 FAQ）
-            pre_intent = 'medical'
+        if not need_rag and faq_answer:
+            # FAQ 快通道命中：写会话历史 + 写缓存 + 返回
+            response_time = time.time() - start_time
+            self.conversation_store.update_session_history(session_id, question, faq_answer)
 
-        faq_answer, need_llm = (None, True)
-        if pre_intent != 'medical':
-            faq_answer, need_llm = self.faq_search.search_faq(question, intent=pre_intent)
+            if use_cache and self.cache.is_connected():
+                self.cache.set(cache_key, {
+                    'type': 'faq',
+                    'answer': faq_answer,
+                    'sources': [],
+                    'confidence': 0.95,
+                    'intent': 'faq',
+                    'strategy': 'faq_fast_channel',
+                })
 
-        if not need_llm:
-            final_answer = faq_answer
-            intent = 'faq'
-            selected_strategy = 'faq'
-            confidence = 0.95
-        else:
-            # 3. 统一走 CoreRAGSystem 生成（内部严格对齐 EduRAG 六步流程：
-            #    意图分类 → 策略选择 → 检索与合并 → 重排序 → 构建上下文 → LLM 生成）
-            rag_result = self.rag_core.generate(
-                question, source_filter=source_filter, history=history, strategy=strategy
+            logger.info(f"FAQ 快通道命中，跳过 RAG: {question}")
+            return QueryResponse(
+                answer=faq_answer,
+                sources=[],
+                confidence=0.95,
+                response_time=response_time,
+                used_cache=False,
+                intent='faq',
+                strategy='faq_fast_channel',
+                session_id=session_id,
             )
-            final_answer = rag_result['answer']
-            intent = rag_result['intent']
-            selected_strategy = rag_result['strategy']
-            sources = rag_result['sources']
-            confidence = rag_result['confidence']
 
+        # ===== 通道② 深通道：RAG 降级处理 =====#
+        # Step 3: 调用 CoreRAGSystem.generate() 执行完整 RAG 流程：
+        #         意图分类 → 通用知识直通/策略选择 → 混合检索+Small-to-Big → 精排 → 生成
+        rag_result = self.rag_core.generate(
+            question, source_filter=source_filter, history=history, strategy=strategy
+        )
+
+        final_answer = rag_result['answer']
+        intent = rag_result['intent']
+        selected_strategy = rag_result['strategy']
+        sources = rag_result['sources']
+        confidence = rag_result['confidence']
+        degraded = bool(rag_result.get('degraded', False))
+        degrade_level = int(rag_result.get('degrade_level', 0))
+        degrade_reason = rag_result.get('degrade_reason', '')
         response_time = time.time() - start_time
 
-        # 6. 写会话历史（FAQ 命中与 RAG 命中都记录，对齐 EduRag 双向写入）
+        if degraded:
+            logger.warning(
+                "RAG 深通道降级返回 (level=%d, reason=%s, query=%r)",
+                degrade_level, degrade_reason, question
+            )
+
+        # Step 4: 写 MySQL 会话历史（对齐 EduRag conversations 表，保留最近 5 轮）
         if final_answer:
             self.conversation_store.update_session_history(session_id, question, final_answer)
 
-        # 7. 写缓存
+        # Step 5: 写缓存 —— 降级结果区别对待
+        #   L1（同粒度降级）：结果由真实检索数据产出且稳定，可以缓存。
+        #   L2 无召回：不缓存。知识库随时会入库新数据，缓存拒答会让
+        #              新数据上线后用户仍拿到"没找到"，直到 TTL 过期。
+        #   L2 基础设施故障：**严禁缓存**。否则 Milvus 恢复后用户仍会吃到
+        #              拒答长达一个 TTL——把一次分钟级故障放大成小时级。
         if use_cache and self.cache.is_connected():
-            self.cache.set(cache_key, {
-                'type': 'rag',
-                'answer': final_answer,
-                'sources': sources,
-                'confidence': confidence,
-                'intent': intent,
-                'strategy': selected_strategy,
-            })
+            if degrade_level >= 2:
+                logger.info(
+                    "跳过缓存：降级水位 %d (%s)，避免延长故障影响 (query=%r)",
+                    degrade_level, degrade_reason, question
+                )
+            else:
+                self.cache.set(cache_key, {
+                    'type': 'rag',
+                    'answer': final_answer,
+                    'sources': sources,
+                    'confidence': confidence,
+                    'intent': intent,
+                    'strategy': selected_strategy,
+                    'degraded': degraded,
+                    'degrade_level': degrade_level,
+                    'degrade_reason': degrade_reason,
+                })
 
         return QueryResponse(
             answer=final_answer,
@@ -390,6 +442,9 @@ class RAGWebAPI:
             intent=intent,
             strategy=selected_strategy,
             session_id=session_id,
+            degraded=degraded,
+            degrade_level=degrade_level,
+            degrade_reason=degrade_reason,
         )
 
     def run(self, host: str = "0.0.0.0", port: int = 8000, debug: bool = False):

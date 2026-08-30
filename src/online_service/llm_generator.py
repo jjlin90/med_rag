@@ -22,6 +22,26 @@ except ImportError:
 class LLMGenerator:
     """LLM生成器"""
 
+    # 宽松模式系统提示（原始版：软约束，易被 LLM 参数化补刀绕过）
+    _BASE_SYS = """你是一个专业的医疗智能助手，基于提供的医学知识回答用户问题。
+
+回答要求：
+1. 基于提供的上下文内容回答，不要编造信息
+2. 回答要准确、专业、易于理解
+3. 如果信息不足，明确说明
+4. 对于医疗问题，强调仅供参考，不能替代专业医疗建议
+5. 保持礼貌和专业的态度"""
+
+    # 严格 grounding 模式系统提示（两轮全量配对复评验证：
+    #   离线轮 glm-4.7 裁判 / 210 题：F 0.259→0.464（ΔF=+0.21）
+    #   线上轮 glm-4.5-air 裁判 / 207 题有效：F 0.713→0.964（ΔF=+0.25））
+    _GROUNDING_SYS = """你是一个严谨的医疗知识问答助手。你必须【严格只】基于下面【相关知识】中给出的内容来回答用户问题，遵守以下规则：
+
+1. 只能使用【相关知识】中明确包含的信息。绝对不允许引入【相关知识】之外的任何医学知识、常识或个人推断。
+2. 如果【相关知识】的内容不足以回答用户问题，或完全不相关，必须明确说明"根据提供的资料，无法回答该问题"，不要尝试用外部知识补充。
+3. 回答中的每一条事实陈述都必须能在【相关知识】中找到对应依据。
+4. 保持专业、简洁；涉及医疗建议时提醒"仅供参考，不能替代专业医疗建议"。"""
+
     def __init__(self, config: Config):
         self.config = config
         self.model_name = config.LLM_MODEL_NAME
@@ -168,18 +188,31 @@ class LLMGenerator:
         return answer
 
     def _build_system_prompt(self) -> str:
-        """构建系统提示"""
-        return """你是一个专业的医疗智能助手，基于提供的医学知识回答用户问题。
-
-回答要求：
-1. 基于提供的上下文内容回答，不要编造信息
-2. 回答要准确、专业、易于理解
-3. 如果信息不足，明确说明
-4. 对于医疗问题，强调仅供参考，不能替代专业医疗建议
-5. 保持礼貌和专业的态度"""
+        """构建系统提示（grounding 开关切换严格/宽松）"""
+        if getattr(self.config, "LLM_GROUNDING", True):
+            return self._GROUNDING_SYS
+        return self._BASE_SYS
 
     def _build_user_prompt(self, query: str, context: str, history: Optional[List[Dict]] = None) -> str:
-        """构建用户提示"""
+        """构建用户提示（grounding 开启时强制"仅基于相关知识"）"""
+        if getattr(self.config, "LLM_GROUNDING", True):
+            prompt = f"""请仅基于以下【相关知识】回答用户问题，不要使用任何额外知识：
+
+【相关知识】
+{context}
+
+【用户问题】
+{query}
+"""
+            if history:
+                prompt += "\n【对话历史】\n"
+                for msg in history[-3:]:  # 只使用最近3轮历史
+                    role = "用户" if msg['role'] == 'user' else "助手"
+                    prompt += f"{role}: {msg['content']}\n"
+            prompt += "\n请严格依据上述【相关知识】作答："
+            return prompt
+
+        # 宽松模式（原逻辑）
         prompt = f"""基于以下医学知识回答问题：
 
 【相关知识】
@@ -188,16 +221,12 @@ class LLMGenerator:
 【用户问题】
 {query}
 """
-
-        # 添加历史上下文
         if history:
             prompt += "\n【对话历史】\n"
-            for msg in history[-3:]:  # 只使用最近3轮历史
+            for msg in history[-3:]:
                 role = "用户" if msg['role'] == 'user' else "助手"
                 prompt += f"{role}: {msg['content']}\n"
-
         prompt += "\n请根据提供的知识回答用户的问题："
-
         return prompt
 
     def generate_fallback_answer(self, query: str) -> str:

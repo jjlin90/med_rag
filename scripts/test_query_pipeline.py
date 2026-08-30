@@ -126,13 +126,25 @@ class RAGTester:
             })
 
             # 4.2 检索
+            # 必须走 Small-to-Big：与线上 rag_system 行为保持一致。
+            # 直接用 search() 会召回 2000 字父块，导致此处的耗时/命中统计
+            # 与真实线上链路不可比，调试结论会失真。
             retrieve_start = time.time()
-            retrieval_results = self.retrieval.search(augmented_query, source_filter)
+            retrieval_result = self.retrieval.search_child_to_parent(
+                augmented_query, source_filter)
             retrieve_time = time.time() - retrieve_start
+            # 注意：search_child_to_parent 返回 RetrievalResult（不是 list）。
+            # 传给 reranker 必须取 .documents —— rerank 内部会原地 sort()，
+            # RetrievalResult 作为序列代理没有 sort 方法，直接传会崩。
+            retrieval_results = retrieval_result.documents
             rag_steps.append({
                 'retrieval': {
                     'results_count': len(retrieval_results),
-                    'time': retrieve_time
+                    'time': retrieve_time,
+                    'degraded': retrieval_result.degraded,
+                    'degrade_level': retrieval_result.degrade_level,
+                    'degrade_reason': retrieval_result.degrade_reason,
+                    'orphan_count': retrieval_result.orphan_count,
                 }
             })
 

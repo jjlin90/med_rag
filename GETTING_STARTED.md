@@ -57,6 +57,13 @@ python main.py
 
 # 交互式问答测试
 python scripts/test_query_pipeline.py
+
+# Milvus 体检：验证子块过滤是否下推（秒级静态体检；加 --with-search 走端到端）
+python scripts/check_chunk_type_filter.py
+python scripts/check_chunk_type_filter.py --with-search --query "一型糖尿病和二型糖尿病有什么区别"
+
+# 分层降级策略回归测试（9 项 mock 场景，无需 Milvus）
+python scripts/test_degrade_policy.py
 ```
 
 启动后访问 `http://localhost:8005/docs` 看接口文档。

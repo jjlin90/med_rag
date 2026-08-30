@@ -14,6 +14,23 @@ from .document_loader import Document
 
 logger = logging.getLogger(__name__)
 
+# 中文优化分隔符（入库切分与在线 L1 降级切分共用）。
+# 必须与线上保持完全一致：L1 降级会在内存中把父块临时切成子块，
+# 若分隔符/参数与入库时不同，检索到的片段与库内子块不同构，会引入难以排查的偏差。
+CHINESE_SEPARATORS = [
+    "\n\n",  # 双换行
+    "\n",    # 单换行
+    "。",    # 中文句号
+    "！",    # 中文感叹号
+    "？",    # 中文问号
+    "；",    # 中文分号
+    "：",    # 中文冒号
+    ",",     # 英文逗号
+    " ",     # 空格
+    ""       # 字符级别
+]
+
+
 @dataclass
 class Chunk:
     """分块数据结构"""
@@ -83,23 +100,12 @@ class ChunkSplitter:
         try:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-            # 中文优化分割器
+            # 中文优化分割器（分隔符与在线 L1 降级切分共用，勿单独修改）
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=self.parent_chunk_size,
                 chunk_overlap=self.chunk_overlap,
                 length_function=len,
-                separators=[
-                    "\n\n",  # 双换行
-                    "\n",    # 单换行
-                    "。",    # 中文句号
-                    "！",    # 中文感叹号
-                    "？",    # 中文问号
-                    "；",    # 中文分号
-                    "：",    # 中文冒号
-                    ",",     # 英文逗号
-                    " ",     # 空格
-                    ""       # 字符级别
-                ]
+                separators=CHINESE_SEPARATORS
             )
 
             # 分割文本
@@ -117,7 +123,11 @@ class ChunkSplitter:
                         'chunk_index': i,
                         'chunk_type': 'parent',
                         'total_chunks': len(split_texts)
-                    }
+                    },
+                    # 必须显式传入：Chunk.chunk_type 默认值为 'child'，
+                    # 不传会导致父块的 chunk_type 被错误标记为 'child'，
+                    # 使下游任何基于 chunk_type 的过滤/统计全部失效。
+                    chunk_type='parent'
                 )
                 parent_chunks.append(parent_chunk)
 
@@ -134,23 +144,12 @@ class ChunkSplitter:
         try:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-            # 子块使用更小的chunk_size
+            # 子块使用更小的chunk_size（分隔符与在线 L1 降级切分共用，勿单独修改）
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=self.child_chunk_size,
                 chunk_overlap=self.chunk_overlap,
                 length_function=len,
-                separators=[
-                    "\n\n",
-                    "\n",
-                    "。",
-                    "！",
-                    "？",
-                    "；",
-                    "：",
-                    ",",
-                    " ",
-                    ""
-                ]
+                separators=CHINESE_SEPARATORS
             )
 
             # 分割父块内容
@@ -170,7 +169,8 @@ class ChunkSplitter:
                         'total_chunks': len(split_texts)
                     },
                     parent_id=parent_id,
-                    parent_content=parent_chunk.content
+                    parent_content=parent_chunk.content,
+                    chunk_type='child'
                 )
                 child_chunks.append(child_chunk)
 
@@ -218,7 +218,8 @@ class ChunkSplitter:
                     **metadata,
                     'chunk_index': i // chunk_size,
                     'total_chunks': (len(content) + chunk_size - 1) // chunk_size
-                }
+                },
+                chunk_type=chunk_type
             )
 
             chunks.append(chunk)

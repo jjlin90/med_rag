@@ -212,6 +212,12 @@ class BGEEmbeddingProvider:
                         # 将恒为空，父子检索功能实际失效。
                         'parent_id': chunk.parent_id or '',
                         'parent_content': chunk.parent_content or '',
+                        # chunk_type 顶层字段：Small-to-Big 依赖它在 Milvus 侧
+                        # 下推「只召回子块」的过滤。对象属性缺失时回退到 metadata，
+                        # 保证旧分块数据（chunk_type 未显式赋值）也能拿到正确类型。
+                        'chunk_type':
+                        getattr(chunk, 'chunk_type', None)
+                        or chunk.metadata.get('chunk_type', 'child'),
                         'hash_id':
                         self.compute_hash(chunk.content)
                     }

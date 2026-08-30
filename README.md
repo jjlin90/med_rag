@@ -5,11 +5,12 @@
 
 ## 核心特性
 
-- **混合检索**：BGE-M3 一次前向同时产出**稠密向量**（语义）+**稀疏向量**（词项权重），在 Milvus 中加权融合，兼顾语义理解与关键词命中。
-- **父子分块**：400 字符子块负责「精准检索」，2000 字符父块负责「给 LLM 完整上下文」，解决小分块缺逻辑、大分块检索糙的问题。
+- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，从机制上杜绝「头痛」误命中「声带息肉」式答非所问；②未命中自动降级 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），意图分类全程只跑一次。
+- **混合检索**：BGE-M3 一次前向同时产出**稠密向量**（语义）+**稀疏向量**（词项权重），在 Milvus 中按 sparse 0.7 / dense 1.0 加权融合（WeightedRanker），兼顾语义理解与关键词命中。
+- **Small-to-Big 父子分块**：400 字符子块负责「精准检索」，2000 字符父块负责「给 LLM 完整上下文」；检索链路 Top-16 粗排召回 → Top-5 子块命中 → parent_id 回溯父块去重 → BGE-reranker 精排 Top-2。
+- **chunk_type 过滤下推**：schema 顶层 `chunk_type` 字段 + 自适应探测（新库 `chunk_type=='child'`，旧库 `parent_id != ""`），父块不参与召回，20816 条旧数据无需重建集合，召回槽位浪费率 25% → 0。
+- **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 安全拒答（固定话术，**不调用 LLM**，避免参数知识编造）；降级水位经 `/health` 暴露，基础设施故障的降级结果不写缓存。
 - **GPU 加速**：向量化/重排自动使用 CUDA（fp16），离线入库从纯 CPU 的十余小时降到约 30 分钟。
-- **FAQ 一级缓存**：非医疗类问题先查 Redis（一级）→ 未命中查 MySQL + jieba BM25（二级）→ 命中后写回 Redis，下次直答；未命中才进入 RAG 检索链路。**医疗类问题直接走 RAG 检索（稠密检索+重排），不被 FAQ 抢答**，避免标题 BM25 把「头痛」误匹配到无关条目。
-- **意图分流（BERT 重训版）**：轻量 BERT 中文分类器区分「通用知识 / 医疗咨询」。医疗问题走 RAG 检索增强，通用闲聊直接 LLM 直答（不查库）。
 - **LLM 自动选策略**：医疗咨询由大模型自动判断检索策略（直接检索 / HyDE / 子查询 / 回溯抽象），无需用户手动选择。
 - **多轮会话持久化**：MySQL `conversations` 表按 `session_id` 留存最近 5 轮，支持跨刷新续聊。
 - **RAG 评估（Ragas）**：复用本地 BGE-M3 与 DashScope 跑 faithfulness / answer_relevancy / context_precision / context_recall 四项指标。
@@ -30,16 +31,16 @@ med_rag/
 │   │   ├── data_cleaner.py       # 文本清洗、元数据抽取
 │   │   ├── chunk_splitter.py     # 父子分层分块
 │   │   ├── embedding_provider.py # BGE-M3 稠密+稀疏向量
-│   │   └── milvus_store.py       # Milvus 建集合/索引/混合检索/入库
+│   │   └── milvus_store.py       # Milvus 建集合/索引/混合检索/入库（schema 顶层 chunk_type，自适应过滤）
 │   ├── online_service/       # 在线问答服务
 │   │   ├── rag_system.py         # RAG 核心编排（EduRAG 对齐六步：意图→策略→检索→重排→上下文→生成）
-│   │   ├── main_api.py           # FastAPI 服务（RAGWebAPI 封装，含缓存/FAQ/会话/评估）
+│   │   ├── main_api.py           # FastAPI 服务（RAGWebAPI 封装，双通道路由/缓存/FAQ/会话/评估/降级指标）
 │   │   ├── cache_manager.py      # Redis 缓存（md5 稳定键）
-│   │   ├── faq_search.py         # MySQL FAQ + BM25（一级缓存二级）
+│   │   ├── faq_search.py         # MySQL FAQ + jieba BM25（softmax 归一化，阈值 0.85）
 │   │   ├── intent_classifier.py  # BERT 意图识别（已重训，general/medical）
 │   │   ├── strategy_selector.py  # LLM 自动检索策略选择
 │   │   ├── query_augmenter.py    # 四种 Query 增强
-│   │   ├── retrieval.py          # Milvus 混合检索（含多查询合并）
+│   │   ├── retrieval.py          # Milvus 混合检索 + Small-to-Big + 分层降级（L0/L1/L2）
 │   │   ├── reranker.py           # BGE-reranker-large 精排
 │   │   ├── llm_generator.py      # LLM 生成回答（支持多轮历史）
 │   │   ├── conversation_store.py # MySQL 会话历史（conversations 表）
@@ -55,6 +56,9 @@ med_rag/
 │   ├── ingest_faq.py         # 导入 FAQ 到 MySQL
 │   ├── clean_faq.py          # 清洗 FAQ 数据
 │   ├── extract_msd.py        # MSD 原始数据抽取
+│   ├── check_chunk_type_filter.py # Milvus 体检：chunk_type 过滤下推验证（--with-search 端到端）
+│   ├── test_degrade_policy.py# 分层降级策略 mock 测试（L0/L1/L2 全场景）
+│   ├── update_pptx_text.py   # 同步 presentation.pptx 中与代码脱节的表述（支持 --dry-run）
 │   └── test_*.py / simple_*.py   # 测试与简化版工具
 ├── main.py                   # 命令行交互入口（EduRAG 式：选学科→输入问题→RAG 生成）
 ├── data/                     # 数据（git 已屏蔽）
@@ -176,7 +180,7 @@ print(resp.json()["answer"])
 |------|------|
 | `POST /query` | 单轮问答（含 FAQ/缓存/意图/策略/检索/生成全流程） |
 | `POST /chat` | 多轮对话（携带 `session_id` 续聊） |
-| `GET /health` | 健康检查（含各组件状态） |
+| `GET /health` | 健康检查（含各组件状态与降级水位指标） |
 | `GET /stats` | 系统统计 |
 | `GET /available_strategies` | 可用检索策略列表 |
 | `GET /intent_example` | 意图分类示例 |
@@ -192,11 +196,22 @@ PARENT_CHUNK_SIZE = 2000   # 父块（上下文）
 CHILD_CHUNK_SIZE  = 400    # 子块（检索）
 CHUNK_OVERLAP     = 60
 
-# 检索与重排
-TOP_K_RETRIEVE = 8
-TOP_K_RERANK   = 4
-BM25_WEIGHT    = 0.4       # 稀疏(BM25 词项)权重
-DENSE_WEIGHT   = 0.6       # 稠密(语义)权重
+# 混合检索加权融合（WeightedRanker）
+SPARSE_WEIGHT = 0.7        # 稀疏（词权）权重，侧重关键词精确命中
+DENSE_WEIGHT  = 1.0        # 稠密（语义）权重，侧重语义相似
+
+# 检索与重排（Small-to-Big 链路）
+TOP_K_RETRIEVE = 16        # 混合检索粗排召回量
+TOP_K_CHILDREN = 5         # 子块召回数（精细定位）
+TOP_K_RERANK   = 2         # CrossEncoder 精排最终输出（Top-2 父块）
+
+# FAQ 快通道
+FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 softmax 归一化后的命中阈值
+
+# 分层降级策略
+ENABLE_CHILD_FILTER_FALLBACK = True   # L1：同粒度降级（父块现场切成子块）
+ALLOW_LLM_WHEN_NO_CONTEXT    = False  # L2：检索为空时安全拒答，不让 LLM 硬答
+DEGRADE_ALERT_LEVEL          = 1      # 降级水位告警阈值
 
 # 设备：自动检测，有 CUDA 用 cuda，否则 cpu
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

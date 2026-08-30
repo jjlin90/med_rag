@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>med_rag 双通道问答流程</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px 24px 64px; background:#14141A; color:#D3D1C7;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:500; margin:0 0 6px; color:#F1EFE8; }
+  .sub { font-size:13px; color:#8E8E88; margin:0 0 24px; line-height:1.7; }
+  svg { display:block; width:100%; height:auto; }
+  .legend { margin-top:28px; display:flex; flex-wrap:wrap; gap:10px 22px; font-size:12px; color:#8E8E88; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; }
+  .dot { width:11px; height:11px; border-radius:3px; display:inline-block; }
+  table { border-collapse:collapse; margin-top:26px; width:100%; font-size:13px; }
+  th,td { border:1px solid rgba(255,255,255,.14); padding:8px 12px; text-align:left; vertical-align:top; }
+  th { color:#9FE1CB; font-weight:500; background:rgba(255,255,255,.03); }
+  td code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:#FAC775; }
+  h2 { font-size:15px; font-weight:500; margin:34px 0 10px; color:#F1EFE8; }
+  ul { font-size:13px; line-height:1.8; color:#B4B2A9; padding-left:20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>med_rag 在线问答双通道流程（EduRag 对齐版）</h1>
+<p class="sub">缓存 → FAQ 快通道 → 未达阈值降级 RAG 深通道 → 统一落库并返回。<br>
+改造要点：<strong style="color:#9FE1CB">FAQ 从「意图分类后的一个分支」提升为第一通道</strong>；意图分类只在深通道内执行一次；BM25 分数经 softmax 归一到 (0,1] 后阈值 0.85 才真正生效。</p>
+
+<svg viewBox="0 0 680 1004" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
+<title>med_rag 双通道在线问答流程</title>
+<desc>用户提问先查 Redis 缓存，命中直接返回；未命中则进入 FAQ 快通道，四级检索后按 softmax 归一化阈值 0.85 判定，未达标降级到 RAG 深通道的八步链路，最后统一写会话历史与缓存并返回 QueryResponse。</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="#8E8E88" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<rect x="250" y="24" width="180" height="44" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="340" y="46" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">用户提问 User Query</text>
+
+<path d="M340 68 L340 92" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="225" y="96" width="230" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="340" y="118" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">① Redis 缓存查询</text>
+<text x="340" y="138" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">key = query:{md5(question)}</text>
+
+<path d="M340 152 L340 176" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="255" y="180" width="170" height="48" rx="8" fill="#633806" stroke="#EF9F27" stroke-width="0.5"/>
+<text x="340" y="198" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#FAC775">缓存命中？</text>
+<text x="340" y="216" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#EF9F27">used_cache = true</text>
+
+<rect x="470" y="180" width="150" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="545" y="198" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">直接返回缓存</text>
+<text x="545" y="216" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">零开销 · 毫秒级</text>
+
+<path d="M425 204 L466 204" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<path d="M340 228 L340 264" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="350" y="248" font-size="12" fill="#8E8E88">未命中</text>
+
+<rect x="50" y="268" width="260" height="544" rx="16" fill="#1F1F24" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="0.5"/>
+<text x="180" y="294" text-anchor="middle" dominant-baseline="central" font-size="15" font-weight="500" fill="#9FE1CB">快通道 · FAQ</text>
+<text x="180" y="313" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#8E8E88">高频标准问 · 零 LLM 调用</text>
+
+<rect x="66" y="324" width="228" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="180" y="343" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">1 · Redis 一级缓存</text>
+<text x="180" y="360" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">faq:{key} 命中即返</text>
+<path d="M180 372 L180 404" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="66" y="408" width="228" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="180" y="427" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">2 · MySQL 二级检索</text>
+<text x="180" y="444" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">jieba 分词 + BM25</text>
+<path d="M180 456 L180 488" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="66" y="492" width="228" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="180" y="511" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">3 · Softmax 归一化</text>
+<text x="180" y="528" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">原始分 ~7.x → (0,1]</text>
+<path d="M180 540 L180 572" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="66" y="576" width="228" height="48" rx="8" fill="#633806" stroke="#EF9F27" stroke-width="0.5"/>
+<text x="180" y="595" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#FAC775">4 · 阈值 ≥ 0.85？</text>
+<text x="180" y="612" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#EF9F27">归一化后阈值才可比</text>
+<path d="M180 624 L180 656" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="66" y="660" width="228" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="180" y="679" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">5 · 命中 → 直接返回</text>
+<text x="180" y="696" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">confidence = 0.95</text>
+<path d="M180 708 L180 740" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="66" y="744" width="228" height="48" rx="8" fill="#791F1F" stroke="#F09595" stroke-width="0.5"/>
+<text x="180" y="763" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#F7C1C1">6 · 未命中 → 降级</text>
+<text x="180" y="780" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#F09595">转入 RAG 深通道</text>
+
+<rect x="370" y="268" width="260" height="544" rx="16" fill="#1F1F24" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="0.5"/>
+<text x="500" y="294" text-anchor="middle" dominant-baseline="central" font-size="15" font-weight="500" fill="#B5D4F4">深通道 · RAG</text>
+<text x="500" y="313" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#8E8E88">长尾复杂问 · 八步全链路</text>
+
+<rect x="386" y="324" width="228" height="48" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="500" y="343" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">1 · 意图分类</text>
+<text x="500" y="360" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#AFA9EC">全链路仅执行一次</text>
+<path d="M500 372 L500 382" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="384" width="228" height="48" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="500" y="403" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">2 · 通用知识分流</text>
+<text x="500" y="420" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#AFA9EC">greeting / other 直通 LLM</text>
+<path d="M500 432 L500 442" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="444" width="228" height="48" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="500" y="463" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">3 · LLM 选检索策略</text>
+<text x="500" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#AFA9EC">direct·hyde·subquery·回溯</text>
+<path d="M500 492 L500 502" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="504" width="228" height="48" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="500" y="523" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">4 · BGE-M3 双向量编码</text>
+<text x="500" y="540" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">dense 1024 + sparse 词权</text>
+<path d="M500 552 L500 562" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="564" width="228" height="48" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="500" y="583" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">5 · Milvus 混合检索</text>
+<text x="500" y="600" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">WeightedRanker 0.7/1.0 · Top-16（仅子块）</text>
+<path d="M500 612 L500 622" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="624" width="228" height="48" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="500" y="643" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">6 · Small-to-Big 回溯</text>
+<text x="500" y="660" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">Top-16 → Top-5 子块 → 去重父块</text>
+<path d="M500 672 L500 682" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="684" width="228" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="500" y="703" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">7 · BGE-reranker 精排</text>
+<text x="500" y="720" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">CrossEncoder 全交互打分</text>
+<path d="M500 732 L500 742" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="386" y="744" width="228" height="48" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="500" y="763" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">8 · 拼上下文 → 生成</text>
+<text x="500" y="780" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">通义千问 · 引用溯源</text>
+
+<path d="M294 768 L366 768" fill="none" stroke="#F09595" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="330" y="758" text-anchor="middle" font-size="12" fill="#F09595">降级</text>
+
+<path d="M180 812 L180 840" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
+<path d="M500 812 L500 840" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
+<path d="M180 840 L500 840" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
+<path d="M340 840 L340 852" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="190" y="856" width="300" height="56" rx="8" fill="#2C2C2A" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="340" y="878" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#D3D1C7">写会话历史 + 回写缓存</text>
+<text x="340" y="898" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#B4B2A9">MySQL conversations · Redis 双写</text>
+
+<path d="M340 912 L340 924" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="150" y="928" width="380" height="56" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="340" y="950" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">返回 QueryResponse</text>
+<text x="340" y="970" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#AFA9EC">answer · sources · confidence · strategy · session_id</text>
+</svg>
+
+<div class="legend">
+  <span><i class="dot" style="background:#3C3489;border:1px solid #AFA9EC"></i>入口 / 编排</span>
+  <span><i class="dot" style="background:#0C447C;border:1px solid #85B7EB"></i>缓存 / 检索</span>
+  <span><i class="dot" style="background:#085041;border:1px solid #5DCAA5"></i>快通道 FAQ / 生成</span>
+  <span><i class="dot" style="background:#633806;border:1px solid #EF9F27"></i>判定节点</span>
+  <span><i class="dot" style="background:#791F1F;border:1px solid #F09595"></i>降级路径</span>
+</div>
+
+<h2>关键参数（读自 <code>src/config/settings.py</code>）</h2>
+<table>
+<tr><th style="width:34%">参数</th><th style="width:16%">值</th><th>说明</th></tr>
+<tr><td><code>FAQ_NORMALIZED_THRESHOLD</code></td><td>0.85</td><td>BM25 经 softmax 归一到 (0,1] 后的命中阈值。改造前是 0.5 对 ~7.x 原始分，形同虚设。</td></tr>
+<tr><td><code>SPARSE_WEIGHT / DENSE_WEIGHT</code></td><td>0.7 / 1.0</td><td>WeightedRanker 权重，顺序与 AnnSearchRequest 的 [dense, sparse] 一致。</td></tr>
+<tr><td><code>TOP_K_RETRIEVE</code></td><td>16</td><td>混合检索粗排召回量，多召回给精排留余地。</td></tr>
+<tr><td><code>TOP_K_CHILDREN</code></td><td>5</td><td>Small-to-Big 子块召回数（400 字粒度，精细定位）。</td></tr>
+<tr><td><code>TOP_K_RERANK</code></td><td>2</td><td>CrossEncoder 精排后最终送入 LLM 的父块数。</td></tr>
+<tr><td><code>PARENT / CHILD / OVERLAP</code></td><td>2000 / 400 / 60</td><td>父子分块字符数与重叠窗口。</td></tr>
+</table>
+
+<h2>与改造前的行为差异</h2>
+<ul>
+<li><strong>FAQ 位置</strong>：改造前是「意图分类后的一个分支」，医疗类问题永远不进 FAQ；改造后提升为<strong>第一通道</strong>，所有 query 先过 FAQ，未达阈值才降级。</li>
+<li><strong>意图分类次数</strong>：改造前 <code>main_api.py</code> 预判一次 + <code>rag_system.py</code> 再算一次；改造后<strong>只在深通道内部执行一次</strong>。</li>
+<li><strong>检索粒度</strong>：改造前父块与子块混在一起返回 Top-8；改造后走 <strong>Small-to-Big</strong>：子块定位 → parent_id 回溯父块 → 去重 → 精排 Top-2。</li>
+<li><strong>阈值语义</strong>：改造前靠 <code>_question_relevant()</code> 关键词守卫 hack 兜底误匹配；归一化后该 hack 已删除。</li>
+</ul>
+
+<h2>深通道内的分层降级（L0 / L1 / L2）</h2>
+<p>原则是「<strong>降级路径必须比主路径更安全，而不是更粗糙</strong>」。</p>
+<table>
+<tr><th style="width:12%">层级</th><th style="width:34%">触发与行为</th><th>输出粒度 / 风险</th></tr>
+<tr><td><strong>L0</strong></td><td>正常路径：过滤下推只召回子块，orphan 父块记 ERROR 剔除</td><td>400 字子块 → 2000 字父块 · 基线</td></tr>
+<tr><td><strong>L1</strong></td><td>子块召回为空 → 放开过滤重查，命中父块后<strong>现场切成 400 字子块</strong>（共享 SEPARATORS，线上线下同构）</td><td><strong>仍是 400 字子块</strong> · 风险不上升</td></tr>
+<tr><td><strong>L2</strong></td><td>L1 仍为空 / 基础设施故障 → <strong>安全拒答，不调用 LLM</strong>；故障降级结果不写缓存</td><td>无上下文 · 风险最低</td></tr>
+</table>
+<p>「检索不到就返回 2000 字父块」属于<strong>用质量下降伪装成降级</strong>，已<strong>永久禁止、不提供开关</strong>。
+回归测试：<code>python scripts/test_degrade_policy.py</code>（9 项 mock 场景）。</p>
+</div>
+</body>
+</html>

@@ -38,9 +38,59 @@ class MilvusStore:
         self.alias = getattr(config, "MILVUS_CONN_ALIAS", "MED")
         # MilvusClient 用于混合检索（hybrid_search）
         self.client = None
+        # 集合是否含顶层 chunk_type 字段（None=未探测，首次用到时惰性探测并缓存）
+        self._has_chunk_type: Any = None
 
         # 初始化连接
         self._init_connection()
+
+    def has_chunk_type_field(self) -> bool:
+        """当前集合 schema 是否包含顶层 chunk_type 字段。
+
+        旧库没有该字段（chunk_type 只存在于 metadata JSON 内部），此时必须退化用
+        `parent_id != ""` 区分子块——父块的 parent_id 在 batch_process 中已被
+        归一为空字符串，因此该条件与 chunk_type=='child' 等价。
+        """
+        if self._has_chunk_type is not None:
+            return bool(self._has_chunk_type)
+
+        try:
+            if not utility.has_collection(self.collection_name, using=self.alias):
+                self._has_chunk_type = False
+                return False
+            collection = Collection(self.collection_name, using=self.alias)
+            field_names = {f.name for f in collection.schema.fields}
+            self._has_chunk_type = "chunk_type" in field_names
+            if not self._has_chunk_type:
+                logger.warning(
+                    "集合 %s 缺少顶层 chunk_type 字段（旧库），子块过滤将退化为 "
+                    "parent_id != ''。效果等价，但建议重建集合以获得显式字段。",
+                    self.collection_name)
+        except Exception as e:  # 探测失败不应阻断主流程
+            logger.warning("探测 chunk_type 字段失败(%s)，退化为 parent_id 过滤", e)
+            self._has_chunk_type = False
+
+        return bool(self._has_chunk_type)
+
+    def child_filter_expr(self) -> str:
+        """返回「只召回子块」的 Milvus 过滤表达式。
+
+        新库用显式字段 chunk_type=='child'；旧库退化为 parent_id != ''。
+        两者语义等价：chunk_type=='parent' 的块 parent_id 恒为空字符串。
+        """
+        if self.has_chunk_type_field():
+            return "chunk_type == 'child'"
+        return "parent_id != ''"
+
+    @staticmethod
+    def combine_expr(*exprs: str) -> str:
+        """把多个过滤表达式用 and 连接，自动跳过空串并加括号保证优先级。"""
+        parts = [e for e in exprs if e and e.strip()]
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            return parts[0]
+        return " and ".join(f"({p})" for p in parts)
 
     def _ensure_database(self):
         """确保目标数据库存在；不存在则自动创建（需要 default 库权限）。"""
@@ -165,6 +215,13 @@ class MilvusStore:
                         dtype=DataType.VARCHAR,
                         description="Parent chunk content",
                         max_length=65535),
+            # 分块类型字段：'parent' | 'child'。
+            # 顶层标量字段（而非 metadata 里的 JSON key）才能在检索时下推过滤表达式，
+            # 让 Milvus 只召回子块，避免 2000 字父块抢占 Top-K 槽位。
+            FieldSchema(name="chunk_type",
+                        dtype=DataType.VARCHAR,
+                        description="Chunk type: parent or child",
+                        max_length=16),
             # 来源字段：学科/科室来源（如 心血管、神经科），用于按来源过滤
             FieldSchema(name="source",
                         dtype=DataType.VARCHAR,
@@ -253,6 +310,14 @@ class MilvusStore:
         collection = Collection(self.collection_name, using=self.alias)
         total_added = 0
 
+        # 旧集合没有 chunk_type 列，此时必须省略该列，
+        # 否则按列位置插入会因列数与 schema 不匹配而报错。
+        with_chunk_type = self.has_chunk_type_field()
+        if not with_chunk_type:
+            logger.warning(
+                "集合 %s 无 chunk_type 字段，本次入库将跳过该列（子块过滤退化为 parent_id != ''）",
+                self.collection_name)
+
         try:
             # 按batch处理
             for i in range(0, len(documents), batch_size):
@@ -265,6 +330,7 @@ class MilvusStore:
                 sparse_vectors = []
                 parent_ids = []
                 parent_contents = []
+                chunk_types = []
                 sources = []
                 timestamps = []
                 metadata_list = []
@@ -274,8 +340,14 @@ class MilvusStore:
                     texts.append(doc.get('content', ''))
                     dense_vectors.append(doc.get('dense_embedding', []))
                     sparse_vectors.append(doc.get('sparse_embedding', {}))
-                    parent_ids.append(doc.get('parent_id', ''))
-                    parent_contents.append(doc.get('parent_content', ''))
+                    # 父块 parent_id 为 None 时归一为空串：空串是「我是父块」的判定依据
+                    parent_ids.append(doc.get('parent_id') or '')
+                    parent_contents.append(doc.get('parent_content') or '')
+                    # 顶层 chunk_type 缺失时，从 metadata 回补，避免旧分块数据丢类型
+                    chunk_types.append(
+                        doc.get('chunk_type')
+                        or doc.get('metadata', {}).get('chunk_type')
+                        or ('child' if doc.get('parent_id') else 'parent'))
                     sources.append(
                         doc.get('metadata', {}).get('source', 'unknown'))
                     # timestamp 在 schema 中为 int64，但源头可能是 float（如 st_mtime），统一转 int 兜底
@@ -284,11 +356,14 @@ class MilvusStore:
                     timestamps.append(int(_ts))
                     metadata_list.append(doc.get('metadata', {}))
 
-                # 构造entities
+                # 构造entities（列顺序必须与 _create_collection 的 fields 一致）
                 entities = [
                     ids, texts, dense_vectors, sparse_vectors, parent_ids,
-                    parent_contents, sources, timestamps, metadata_list
+                    parent_contents
                 ]
+                if with_chunk_type:
+                    entities.append(chunk_types)
+                entities.extend([sources, timestamps, metadata_list])
 
                 # 批量插入
                 insert_result = collection.insert(entities)
@@ -315,7 +390,10 @@ class MilvusStore:
                query_dense: List[float],
                query_sparse: Dict,
                limit: int = 10,
-               expr: str = "") -> List[Dict]:
+               expr: str = "",
+               sparse_weight: float = 0.7,
+               dense_weight: float = 1.0,
+               only_children: bool = False) -> List[Dict]:
         """
         执行混合搜索（稠密向量 + 稀疏向量）
 
@@ -328,6 +406,9 @@ class MilvusStore:
             query_sparse: 查询稀疏向量 ({token_id: weight} 字典)
             limit: 返回结果数量
             expr: 过滤表达式（如 source == 'xxx'）
+            sparse_weight: 稀疏权重（对齐 EduRag: 0.7）
+            dense_weight: 稠密权重（对齐 EduRag: 1.0）
+            only_children: True 时下推「只召回子块」过滤。
 
         Returns:
             搜索结果列表，每项包含 id/distance/score/entity
@@ -335,6 +416,13 @@ class MilvusStore:
         # 确保集合已加载到内存
         collection = Collection(self.collection_name, using=self.alias)
         collection.load()
+
+        # 子块过滤下推：在 Milvus 侧生效，父块不占用 Top-K 槽位。
+        # 若在应用层再做后置过滤，2000 字父块（语义宽泛、易高分）会挤占子块名额，
+        # 极端情况下 Top-K 全为父块，Small-to-Big 静默失效。
+        if only_children:
+            expr = self.combine_expr(expr, self.child_filter_expr())
+            logger.info("子块过滤下推生效，expr = %s", expr)
 
         # 稠密向量检索请求
         dense_req = AnnSearchRequest(data=[query_dense],
@@ -359,9 +447,8 @@ class MilvusStore:
                                       limit=limit,
                                       expr=expr or None)
 
-        # 加权融合器：权重顺序需与 reqs 顺序一致 [dense, sparse]
-        ranker = WeightedRanker(self.config.DENSE_WEIGHT,
-                                self.config.BM25_WEIGHT)
+        # 加权融合器：权重顺序需与 reqs 顺序一致 [dense, sparse]（对齐 EduRag: sparse 0.7 : dense 1.0）
+        ranker = WeightedRanker(dense_weight, sparse_weight)
 
         # 需要返回的标量字段
         output_fields = [
@@ -400,7 +487,10 @@ class MilvusStore:
                                   query_dense: List[float],
                                   query_sparse: Dict,
                                   limit: int = 10,
-                                  expr: str = "") -> List[Dict]:
+                                  expr: str = "",
+                                  sparse_weight: float = 0.7,
+                                  dense_weight: float = 1.0,
+                                  only_children: bool = False) -> List[Dict]:
         """
         混合搜索（稠密+稀疏），结果已由 WeightedRanker 加权融合。
 
@@ -412,11 +502,18 @@ class MilvusStore:
             query_sparse: 查询稀疏向量
             limit: 返回数量
             expr: 过滤表达式
+            sparse_weight: 稀疏权重（对齐 EduRag: 0.7）
+            dense_weight: 稠密权重（对齐 EduRag: 1.0）
+            only_children: True 时只在子块中召回（Small-to-Big 必需）
 
         Returns:
             融合后的结果列表
         """
-        search_results = self.search(query_dense, query_sparse, limit, expr)
+        search_results = self.search(
+            query_dense, query_sparse, limit, expr,
+            sparse_weight=sparse_weight, dense_weight=dense_weight,
+            only_children=only_children
+        )
 
         if not search_results:
             return []

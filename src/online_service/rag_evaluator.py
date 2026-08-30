@@ -23,6 +23,7 @@ LLM-as-judge（faithfulness / context_precision / answer_relevancy），保证�
 import json
 import logging
 import math
+import os
 import re
 from typing import List, Dict, Any, Optional
 
@@ -84,11 +85,36 @@ class RAGEvaluator:
     def _build_llm(self):
         from langchain_openai import ChatOpenAI
         from ragas.evaluation import LangchainLLMWrapper
+        from langchain_core.rate_limiters import InMemoryRateLimiter
+
+        # 限流 + 重试：DashScope qwen 系列有 RPM 限制，Ragas 会并发发起数百次
+        # judge 调用，不加限流会被 429 兜底成 0 分（2026-08-29 评估事故：210 条中
+        # 142 条四项全 0）。用内存限流器把速率压到 ~1 次/秒，超出部分阻塞等待而非
+        # 失败；max_retries 兜底偶发 429（注意：本机 langchain_core 版本的
+        # InMemoryRateLimiter 不支持 max_bucket 参数，仅用 rps + check_every_n_seconds）。
+        rate_limiter = InMemoryRateLimiter(
+            requests_per_second=1.0,
+            check_every_n_seconds=0.1,
+        )
+        # temperature：judge 默认用 0.0 保证可复现。但部分模型（如 TokenHub 上的
+        # deepseek-v4-pro）会拒绝非 1 的 temperature，返回 400
+        # "invalid temperature: only 1 is allowed for this model"。
+        # 因此做成环境变量可配：LLM_JUDGE_TEMPERATURE=1 即可适配这类模型。
+        # 代价是评分确定性下降，需在报告中注明该裁判的 temperature 设置。
+        try:
+            temperature = float(os.getenv("LLM_JUDGE_TEMPERATURE", "0.0"))
+        except ValueError:
+            logger.warning("LLM_JUDGE_TEMPERATURE 不是合法数字，回退为 0.0")
+            temperature = 0.0
+
         llm = ChatOpenAI(
             model=self.config.LLM_MODEL_NAME,
             openai_api_key=self.config.LLM_API_KEY,
             base_url=self.config.LLM_BASE_URL,
-            temperature=0.0,
+            temperature=temperature,
+            timeout=60,
+            max_retries=5,
+            rate_limiter=rate_limiter,
         )
         return LangchainLLMWrapper(llm)
 

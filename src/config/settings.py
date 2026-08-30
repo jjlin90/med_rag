@@ -6,8 +6,11 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from pathlib import Path
+import logging
 import torch
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -40,14 +43,52 @@ class Config:
         self.CHILD_CHUNK_SIZE = 400  # 检索细分子块长度
         self.CHUNK_OVERLAP = 60  # 文本重叠字符
 
-        # ===================== 检索、重排权重参数 =====================
-        self.TOP_K_RETRIEVE = 8
-        self.TOP_K_RERANK = 4
-        self.BM25_WEIGHT = 0.4
-        self.DENSE_WEIGHT = 0.6
+        # ===================== 检索、重排权重参数（对齐 EduRag 双通道架构） =====================
+        # 混合检索加权融合权重（WeightedRanker）：sparse 侧重关键词精确命中，dense 侧重语义相似
+        self.SPARSE_WEIGHT = 0.7   # 稀疏（词权）权重，EduRag 对齐值
+        self.DENSE_WEIGHT = 1.0    # 稠密（语义）权重，EduRag 对齐值
+
+        # 检索阶段参数
+        self.TOP_K_RETRIEVE = 16       # 混合检索召回量（粗排，取多一点给精排留余地）
+        self.TOP_K_CHILDREN = 5        # Small-to-Big：子块召回数（300字粒度，精细定位）
+        self.TOP_K_RERANK = 2          # CrossEncoder 精排最终输出数（EduRag: Top-2 父块）
+
+        # FAQ 快通道参数（对齐 EduRag：softmax 归一化后阈值）
+        self.FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 softmax 归一化后的命中阈值 [0,1]
+        self.FAQ_CACHE_TTL = 3600              # FAQ Redis 缓存秒数（1小时）
+
+        # ===================== 降级策略（Degradation Policy） =====================
+        # 原则：降级路径必须比主路径「更安全」，而不是「更粗糙」。
+        # 粒度的退化（400 字子块 → 2000 字父块）属于质量下降，在医疗场景下
+        # 会稀释 LLM 注意力、翻倍 token，且掩盖数据问题，因此不提供开关，永久禁止。
+
+        # L1：子块召回为空时，放开子块过滤重查；命中父块后在内存中切成子块再返回。
+        #     输出粒度仍是 400 字子块，只是检索入口从「子块层」换成「父块层」，
+        #     属于同粒度降级，风险不上升，默认开启。
+        self.ENABLE_CHILD_FILTER_FALLBACK = True
+
+        # L2：L1 仍为空时，是否允许交给 LLM 自由作答。
+        #     医疗场景默认 False —— 检索不到依据时让 LLM 用参数知识硬答，
+        #     是整条链路上风险最高的行为（会编造且语气权威）。改为返回安全拒答话术。
+        self.ALLOW_LLM_WHEN_NO_CONTEXT = False
+
+        # 单调递增的降级水位告警阈值：单次查询降级到该级别即打 WARNING，便于接入告警。
+        self.DEGRADE_ALERT_LEVEL = 1          # 0=不打点 1=L1及以上告警 2=仅L2告警
 
         # ===================== 设备全局配置 =====================
+        # 不能静默降级：Windows 上 `uv sync` 极易把 GPU 版 torch 覆盖成 CPU 版
+        # （pip/uv 默认源的 Windows wheel 是 CPU-only），此时 torch.cuda.is_available()
+        # 返回 False，系统继续跑、不报错，只是慢一个数量级——不显式告警根本发现不了。
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.DEVICE == "cpu":
+            logger.warning(
+                "torch 未检测到 CUDA，已降级为 CPU 推理（BGE-M3 embedding 与重排会慢一个数量级）。"
+                "常见原因：Windows 下被 pip/uv 默认源的 CPU 版 torch 覆盖。"
+                "修复见 pyproject.toml 的 [tool.uv.sources] torch 索引配置，"
+                "然后执行 uv sync 重装 GPU 版。"
+            )
+        else:
+            logger.info(f"使用 GPU 推理: {torch.cuda.get_device_name(0)}")
 
         # ===================== Embedding模型配置 =====================
         self.EMBED_MODEL_NAME = "BGE-M3"
@@ -72,10 +113,19 @@ class Config:
 
         # ===================== LLM生成参数 =====================
         # DashScope 兼容模式可用模型：qwen-turbo / qwen-plus / qwen-max 等。
-        # "qwen2" 已不可识别，会报 404 model_not_found，故默认用 qwen-turbo。
-        self.LLM_MODEL_NAME = "qwen-turbo"
+        # 模型名优先读环境变量 LLM_MODEL_NAME（便于额度耗尽时临时切换，如切 qwen-plus / qwen-max），
+        # 缺省回退 qwen-plus。"qwen2" 已不可识别，会报 404 model_not_found。
+        # 注意：模型在进程初始化时加载，切换后必须重启进程才生效。
+        self.LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-v4-flash")
         self.LLM_TEMPERATURE = 0.2
         self.LLM_MAX_TOKENS = 1024
+        # grounding 硬约束（默认开启）：生成阶段强制"只基于检索上下文作答、不足即拒答"，
+        # 抑制 LLM 参数化补刀导致的 faithfulness 下降。两轮全量配对复评实测：
+        #   离线轮 glm-4.7 裁判 / 210 题：F 0.259→0.464（ΔF=+0.21），AR 0.538→0.470（ΔAR=-0.07）
+        #   线上轮 glm-4.5-air 裁判 / 207 题有效（真实服务链路重生成）：F 0.713→0.964（ΔF=+0.25），AR 0.841→0.698（ΔAR=-0.14）
+        # 注：早期 30 题抽样曾估 ΔF=+0.42，系小样本方差大所致，已被全量修正。
+        # 置 LLM_GROUNDING=false 可切回宽松模式，用于复现"无 grounding vs 有 grounding"的 A/B 对比。
+        self.LLM_GROUNDING = os.getenv("LLM_GROUNDING", "true").lower() in ("1", "true", "yes", "on")
 
         # ===================== LLM密钥&接口地址（从.env加载） =====================
         load_dotenv(self.BASE_DIR / ".env")

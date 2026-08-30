@@ -18,16 +18,17 @@
 - 数据规模：清洗后约 **2570 篇** Markdown；分块后约 **20816 个**文本块；单块平均 **462–555** 字符，最大约 **1998** 字符。
 - 向量库：Milvus 集合 `med_msd_consumer_chunk` 与分块**一一对应**。
 - 离线分块：父子分块（子块 **400** / 父块 **2000** 字符），兼顾召回精度与上下文完整。
-- 嵌入模型：BGE-M3 输出**稠密 + 稀疏 + 多向量**，支持 Milvus 混合检索（dense + sparse + multi-vector）。
-- 在线六步：FAQ 缓存 → BERT 意图分类 → LLM 检索策略选择 → Milvus 检索合并(Top8) → BGE-reranker 精排(Top4) → LLM 生成。
+- 嵌入模型：BGE-M3 输出**稠密 + 稀疏**双向量（ColBERT 多向量未启用），支持 Milvus 混合检索（dense 1.0 + sparse 0.7 加权融合）。
+- 在线链路：**FAQ 快通道优先** → 未命中降级 **RAG 深通道**（BERT 意图分类 → LLM 检索策略选择 → Milvus 混合检索 Top-16，过滤下推只召回子块 → Small-to-Big 回溯父块去重 → BGE-reranker 精排 Top-2 → LLM 生成）。
 - 检索策略：direct / hyde / subquery / backtracking，由 LLM **自动选择**适配问题类型。
-- 缓存与 FAQ：Redis 一级缓存 + MySQL BM25 FAQ 二级；**医疗类问题跳过 FAQ 直走 RAG**。
+- 缓存与 FAQ：Redis 一级缓存 + MySQL BM25 FAQ 二级；命中判定用 **softmax 归一化阈值 0.85**（改造前是阈值 0.5 对 ~7 量级原始分，形同虚设）。
+- 可靠性：检索失败走 **L0 严格 / L1 同粒度降级 / L2 安全拒答**三层策略，不让 LLM 在无依据时凭空作答。
 - 多轮对话：会话历史持久化于 MySQL，支持上下文连贯问答与会话 ID 持久化。
 - 评估：Ragas 四维指标（faithfulness / answer_relevancy / context_precision / context_recall）。
 
 ## 4. Evidence（证据 / 案例）
 - 案例 A：用户问"1 型糖尿病"，系统返回"胰腺 β 细胞自身免疫破坏、胰岛素生成不足"等准确病理描述，来源可追溯至默沙东手册。
-- 案例 B（缺陷修复）：用户问"医生，我头痛"曾误命中 FAQ 中"声带息肉"条目（BM25 阈值 0.5 失效，实际分数达 ~7），已通过"医疗问题跳过 FAQ + 关键词相关性守卫"双路径修复，现走 RAG 返回正确内容。
+- 案例 B（缺陷修复）：用户问"医生，我头痛"曾误命中 FAQ 中"声带息肉"条目（根因是 **BM25 阈值 0.5 对 ~7 量级原始分形同虚设**，即评分尺度未校准）。已用 **softmax 归一化 + 阈值 0.85** 从根因修复，并据此把 FAQ 从"意图分支"重构为"第一通道"，同时删除了关键词守卫 hack。
 - 证据：Milvus 混合检索 + BGE-reranker 交叉编码精排显著提升答案相关性与可信度。
 
 ## 5. Analysis（分析）

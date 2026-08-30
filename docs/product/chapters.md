@@ -118,8 +118,8 @@
   - ① FAQ 缓存：Redis 命中即直答；未命中查 MySQL BM25。
   - ② 意图分类：BERT 区分 general / medical。
   - ③ 策略选择：LLM 自动选 direct/hyde/subquery/backtracking。
-  - ④ 检索合并：Milvus 混合检索，粗排 Top8。
-  - ⑤ 重排序：BGE-reranker 交叉编码精排 Top4。
+  - ④ 检索合并：Milvus 混合检索，粗排 Top-16（过滤下推，只召回子块）。
+  - ⑤ Small-to-Big：Top-5 子块 → parent_id 回溯父块去重 → BGE-reranker 交叉编码精排 Top-2。
   - ⑥ 生成：医疗 Prompt + 多轮历史 → 返回 {答案, 意图, 策略, 来源}。
 - **Content Density**: Heavy
 - **Narrative Role**: 展示系统核心运转机制，是技术架构的高光页。
@@ -133,8 +133,8 @@
 - **Selected Template**: 
 - **Content Structure**: Comparison 结构——
   - 四种检索策略（LLM 自动选）：direct（直接向量检索）、hyde（假设性文档增强）、subquery（子问题拆解）、backtracking（回溯纠错）。
-  - 重排序：BGE-reranker 作为 CrossEncoder，对 Top8 候选做精细相关性打分，输出 Top4。
-  - 混合检索：dense（语义）+ sparse（关键词）+ multi-vector 三者融合，提升医学同义表述召回。
+  - 重排序：BGE-reranker 作为 CrossEncoder，对回溯出的候选父块做精细相关性打分，输出 Top-2。
+  - 混合检索：dense（语义 1.0）+ sparse（词权 0.7）加权融合，提升医学同义表述与专名命中（ColBERT 未启用）。
   - 收益：相比单向量 + 无重排，答案相关性/可信度显著提升。
 - **Content Density**: Medium
 - **Narrative Role**: 解释"为什么检索得准"，突出策略与精排的工程价值。
@@ -159,7 +159,7 @@
 - **Selected Template**: 
 - **Content Structure**: Concept 结构——
   - 意图分类：bert-base-chinese 微调，输出 general / medical 及置信度。
-  - 路由规则：**医疗问题跳过 FAQ 直走 RAG**（保证权威）；通用问题可走 FAQ/直答。
+  - 路由规则：**所有问题先过 FAQ 快通道**（Redis → MySQL+BM25，softmax 归一化阈值 0.85），未命中才降级 RAG 深通道；深通道内再由 BERT 判定 general（直答）/ medical（检索）。
   - FAQ 守卫：查询须与 FAQ 问题共享有效关键词，否则回退 RAG，杜绝标题 BM25 误答（如"头痛"误命中"声带息肉"已修复）。
   - 收益：高频问题缓存直答省成本，医疗问题检索保权威，错误命中趋近于零。
 - **Content Density**: Medium
@@ -205,7 +205,7 @@
 - **Content Structure**: Summary 结构——
   - 可运行：离线建库 + 在线 API（端口 8005）+ Streamlit 前端（8501）端到端打通。
   - 稳定性：修复 Windows uv venv 缺 VC++ 运行时导致的原生库崩溃（自包含 DLL 8 个）。
-  - 可用性：修复 FAQ 误答缺陷（医疗问题跳过 FAQ + 关键词守卫）。
+  - 可用性：修复 FAQ 误答缺陷（BM25 softmax 归一化 + 阈值 0.85，从评分尺度根因解决）；检索失败时分层降级（L0/L1/L2），不再让 LLM 凭空作答。
   - 中间件：Milvus / Redis（Docker，密码 1234）/ MySQL 已联通并验证。
   - 关键数字：2570 篇文档、20816 块、BGE-M3 多向量、六步流程。
 - **Content Density**: Medium

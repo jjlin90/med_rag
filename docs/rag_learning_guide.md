@@ -200,17 +200,19 @@ med_rag/
 | 字段 | 类型 | 作用 |
 |------|------|------|
 | `id` | VARCHAR(主键) | 块唯一 ID |
-| `text` | VARCHAR | 子块正文（用于展示/检索） |
+| `text` | VARCHAR | 块正文（子块用于检索、父块用于上下文） |
 | `dense_vector` | FLOAT_VECTOR(1024) | 稠密向量，IVF_FLAT 索引 |
 | `sparse_vector` | SPARSE_FLOAT_VECTOR | 稀疏向量，倒排索引 |
-| `parent_id` | VARCHAR | 所属父块 ID（回溯用） |
+| `parent_id` | VARCHAR | 所属父块 ID（子块回溯用；父块统一为空串 `""`） |
 | `parent_content` | VARCHAR | 冗余存父块正文（避免二次查询） |
+| `chunk_type` | VARCHAR | **`"child"` / `"parent"`**——检索过滤下推的关键字段 |
 | `source` | VARCHAR | 来源/科室（可按来源过滤） |
 | `metadata` | JSON | 标题、关键词等附加信息 |
 
 - dense 索引：`IVF_FLAT`，`nlist=256`，`metric_type=IP`（内积）。
 - sparse 索引：`SPARSE_INVERTED_INDEX`，`drop_ratio_build=0.2`。
-- 混合检索：`MilvusClient.hybrid_search` 对两路分别 ANN 检索，再用 `WeightedRanker` 按 `DENSE_WEIGHT=0.6 / BM25_WEIGHT=0.4` 加权融合、去重。
+- 混合检索：`MilvusClient.hybrid_search` 对两路分别 ANN 检索，再用 `WeightedRanker` 按 `SPARSE_WEIGHT=0.7 / DENSE_WEIGHT=1.0` 加权融合、去重。
+- **检索过滤下推**：检索时带 `chunk_type == "child"` 下推到 Milvus 侧，父块不参与召回。旧库没有该字段时自动降级为 `parent_id != ""`（语义等价，**20816 条存量数据无需重建**）。详见 `docs/diagrams/Small-to-Big缺陷修复报告.md`。
 
 ---
 
@@ -219,19 +221,34 @@ med_rag/
 核心编排在 `src/online_service/rag_system.py` 的 `RAGSystem.generate()`。
 注意：**纯 RAG 的六步是从"意图分类"开始的**；而"FAQ/缓存优先"是 `main_api.py` 在外层套的加速壳，命中就直接返回，不进 RAG。
 
-### 4.0 外层：FAQ / 缓存优先（main_api.py）
+### 4.0 外层：双通道架构（main_api.py）
+
+本项目**不再用意图预判决定走不走 FAQ**，而是改成「快通道优先、深通道兜底」的双通道：
 
 ```
 用户提问
-  → BERT 意图预判：医疗类问题 → 跳过 FAQ，直接进入下面的 RAG 六步
-  → 非医疗类问题：
-       → Redis（一级缓存）：相同问题命中 → 直接返回
-       → 未命中 → MySQL + jieba BM25（二级 FAQ）：命中 → 写回 Redis 后返回
-       → 都未命中 → 进入下面的 RAG 六步（medical 本就走这里；general 则 LLM 直答）
+  │
+  ├─【通道① FAQ 快通道】所有问题都先过这一关（不再做意图预判）
+  │      → Redis 缓存命中 → 直接返回
+  │      → 未命中 → MySQL + jieba BM25 检索
+  │            → BM25 原始分（~7 量级）经 softmax 归一化到 (0,1]
+  │            → 归一化分 ≥ 0.85 → 命中直答（写回 Redis）
+  │
+  └─【通道② RAG 深通道】快通道未命中时自动降级进来
+            → ① 意图分类(BERT)  ② 策略选择(LLM)
+            → ③ Small-to-Big 检索  ④ 重排  ⑤ 构建上下文  ⑥ LLM 生成
 ```
 
-> 学习点：**缓存是 RAG 系统的"性价比外挂"**。高频重复问题没必要每次都跑全套检索+LLM，命中即答，省时省钱。
-> 注意：**医疗类问题刻意绕过 FAQ 直答**——FAQ 是基于 MySQL 文章标题的 BM25 粗检索，阈值对 ~7 量级的原始分数形同虚设，会把「头痛」误匹配到「声带息肉」等无关条目。医疗问题直接走 RAG（稠密检索+重排）更准确。Redis/MySQL 未启动时会自动降级，不影响主流程。
+> 学习点 1：**缓存是 RAG 系统的"性价比外挂"**。高频重复问题没必要每次都跑全套检索+LLM，命中即答，省时省钱。
+>
+> 学习点 2（重要）：**为什么必须做 softmax 归一化？** BM25 的原始分数量纲不稳定——
+> 「高血压吃什么药」可能得 7.2 分，「头痛」和「声带息肉」可能得 6.8 分，
+> 想靠一个固定阈值（曾经用 0.5）区分"命中/未命中"根本不可能，于是出现「头痛」误答「声带息肉」。
+> 归一化把分数压到 (0,1] 且按候选集内相对强弱分布，阈值 0.85 才真正有意义（相当于"明显比其它候选强"）。
+> 这就是**先修量纲、再定阈值**的工程思路——比加一个"关键词重叠守卫"的补丁优雅得多。
+>
+> 学习点 3：**双通道取代了意图预判**。原来的做法是"医疗问题跳过 FAQ"，缺点是必须先跑一次 BERT
+> 才能决定路由；现在所有问题统一先过快通道（成本极低），未命中才降级深通道，**意图分类全程只跑一次**。
 
 ### 4.1 第一步：意图分类（intent_classifier.py，BERT）
 
@@ -278,19 +295,31 @@ retrieval_results = self._retrieve_and_merge(query, source_filter, strategy)
 - `subquery` → 把复杂问题拆成多个子问题，分别检索后合并去重（`search_multi_queries`）。
 - `backtracking` → 把具体问题抽象成更基础的问题再检索。
 
-底层统一走 `Retrieval.search()`：BGE-M3 把查询变成 dense+sparse 向量 → Milvus `hybrid_search` 加权融合 → 返回 Top-K（粗排 `TOP_K_RETRIEVE=8`）候选。
+底层统一走 `Retrieval.search_child_to_parent()`（**Small-to-Big**，见 6.1）：
+
+```python
+# retrieval.py —— 检索到父块回填的完整链路
+children = hybrid_search(query, filter='chunk_type == "child"', top_k=TOP_K_RETRIEVE)  # Top-16 粗排
+children = children[:TOP_K_CHILDREN]                                                    # Top-5 子块
+parents  = dedup_by_parent_id(children)                                                 # parent_id 回溯去重
+```
+
+即：BGE-M3 把查询变成 dense+sparse 向量 → Milvus `hybrid_search` 加权融合（**且过滤下推只召回子块**）
+→ **Top-16 粗排** → 取 **Top-5 子块** → 按 `parent_id` 回溯父块并去重 → 得到候选父块列表。
 
 ### 4.4 第四步：重排序（reranker.py，BGE-reranker）
 
-粗排召回的 8 条里可能有噪声/无关项，用 **BGE-reranker-large（交叉编码 CrossEncoder）** 精排：
+粗排得到的候选父块里可能有噪声，用 **BGE-reranker-large（交叉编码 CrossEncoder）** 精排：
 
 ```python
 reranked_results = self.reranker.rerank(query, retrieval_results, top_k=self.config.TOP_K_RERANK)
 ```
 
 - 把 `(query, 候选文档)` 成对送入模型做**交互式编码**，相关性判断更准。
-- 按分数排序，取 Top-4（`TOP_K_RERANK=4`）喂给 LLM。
-- 模型不可用时**优雅降级**：按原顺序返回前 4 条，不阻塞主流程。
+- 按分数排序，取 **Top-2 父块**（`TOP_K_RERANK=2`）喂给 LLM。
+- 模型不可用时**优雅降级**：按原顺序返回前 2 条，不阻塞主流程。
+- 注意：重排内部会调用 `documents.sort()` 原地排序，因此**传入的必须是普通 list**（`RetrievalResult.documents`），
+  不能直接把 `RetrievalResult` 包装对象传进去。
 
 > 为什么不直接用重排代替检索？见 [6.3](#63-双塔-bi-encoder-vs-交叉编码-cross-encoder)。
 
@@ -303,7 +332,8 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 ```
 
 - 检索命中子块，但返回的是 `parent_content`（父块完整正文），保证 LLM 看到完整语境。
-- 检索为空时返回"未找到相关医学知识"，让 LLM 走兜底回答。
+- **检索为空时返回固定安全拒答话术，并且不再调用 LLM**——详见 4.9 分层降级策略。
+  （旧版是"让 LLM 走兜底回答"，这是医疗场景的风险行为，已废弃。）
 
 ### 4.6 第六步：LLM 生成（llm_generator.py）
 
@@ -326,35 +356,59 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 - 对话历史按 `session_id` 存 MySQL `conversations` 表，保留最近 5 轮。
 - 未命中/MySQL 不可用时降级为内存态，不影响单轮问答。
 
-### 4.8 在线主流程一图流
+### 4.8 在线主流程一图流（双通道版）
 
 ```
 用户提问
   │
-  ├─[意图预判] 医疗类(medical) → 跳过 FAQ，直接进 RAG 六步
+  ├─【通道① FAQ 快通道】所有问题先过这一关，无意图预判
+  │        ├─ Redis 缓存命中 → 直答
+  │        ├─ MySQL + jieba BM25 → softmax 归一化 ≥ 0.85 → 命中直答（写回 Redis）
+  │        └─ 未命中 ↓
   │
-  └─[非医疗] 先试 FAQ/缓存：
-        ├─ Redis命中 → 直答（外壳层，main_api）
-        ├─ MySQL+BM25命中 → 写回Redis → 直答
-        └─ 都未命中 → 进 RAG 六步（general 则 LLM 直答）
-
-[RAG六步]（rag_system.py，medical 或非医疗未命中 FAQ 时进入）
-       ① 意图分类(BERT) ── general ──→ 直接LLM（不检索）
-                           │
-                          medical
-                           ↓
-       ② 策略选择(LLM) ──→ direct / hyde / subquery / backtracking
-                           ↓
-       ③ 检索与合并(Milvus 混合检索, Top8 粗排)
-                           ↓
-       ④ 重排序(BGE-reranker CrossEncoder, Top4 精排)
-                           ↓
-       ⑤ 构建上下文(父块正文 + 编号)
-                           ↓
-       ⑥ LLM 生成(医疗Prompt + 多轮历史)
-                           ↓
-                  返回 {answer, intent, strategy, sources}
+  └─【通道② RAG 深通道】(rag_system.py)
+          ① 意图分类(BERT) ── general ──→ 直接 LLM（不检索）
+                              │
+                             medical
+                              ↓
+          ② 策略选择(LLM) ──→ direct / hyde / subquery / backtracking
+                              ↓
+          ③ Small-to-Big 检索：混合检索(过滤下推只召回子块) Top-16
+                              → Top-5 子块 → parent_id 回溯父块去重
+                              ↓
+          ④ 重排序(BGE-reranker CrossEncoder，Top-2 父块)
+                              ↓
+          ⑤ 构建上下文(父块正文 + 编号，水位为 L0/L1/L2)
+                              ↓
+          ⑥ LLM 生成(医疗 Prompt + 多轮历史)
+                              ↓
+          返回 {answer, intent, strategy, sources, degraded, degraded_reason}
 ```
+
+### 4.9 分层降级策略（retrieval.py）—— 医疗场景的可靠性底线
+
+检索不是每次都有结果。项目的原则是：**降级路径必须比主路径更安全，而不是更粗糙。**
+
+| 层级 | 触发条件 | 行为 | 输出粒度 |
+|------|----------|------|----------|
+| **L0** | 正常 | 严格 Small-to-Big：`chunk_type` 过滤下推，只召回子块；命中却找不到父块的 orphan 记录 ERROR 并剔除 | 400 字子块 → 2000 字父块 |
+| **L1** | 子块召回为空 | **同粒度降级**：放开子块过滤重查；若命中父块，用 `_split_parent_in_memory()` **现场切成 400 字子块**再返回（切分分隔符与离线建库共享同一常量，保证线上线下同构）；有候选上限防膨胀 | **仍是 400 字子块**（粒度不退化） |
+| **L2** | L1 仍为空 / 基础设施故障 | **安全拒答**：返回固定话术，**不调用 LLM** | 无上下文 |
+
+**三个必须理解的设计取舍：**
+
+1. **为什么 L1 不直接返回 2000 字父块？** 父块稀释 LLM 注意力、token 翻倍，而且掩盖了"这块数据为什么没被切出子块"的真相。
+   L1 的降级是**换检索入口（父块层→子块层）**，不是**降输出质量**。
+2. **为什么 L2 不调 LLM？** 医疗场景下，检索不到依据时让 LLM 用参数知识硬答，是整条链路上**风险最高的行为**——
+   它会编造，而且语气权威，用户分不清。宁可拒答。
+3. **为什么区分"召回为空"和"基础设施故障"？** 二者都是 L2，但**故障导致的降级结果不写 Redis 缓存**
+   （否则故障期间的空结果会被缓存污染后续请求），且这两种情况在 `/health` 的降级指标里分开计数。
+
+降级水位通过 `RetrievalResult`（Sequence 代理，含 `.documents` / `.watermark` / `.reason` / `.failure`）在链路上传播，
+最终体现在 `/query` 响应的 `degraded` / `degraded_reason` / `degraded_level` 三个字段上。
+多路子查询合并时取**最差水位**（木桶效应，不允许"一路降级、一路正常"被平均成正常）。
+
+> 想验证？跑 `python scripts/test_degrade_policy.py`（9 项 mock 场景全覆盖）。
 
 ---
 
@@ -379,6 +433,10 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 
 - **本质矛盾**：检索要"小"（精准），理解要"大"（完整）。
 - **解法**：检索用子块，生成用父块。本项目子块 400 / 父块 2000，重叠 60。
+- **Small-to-Big 检索链路**：Top-16 粗排 → Top-5 子块 → `parent_id` 回溯父块去重 → 精排 Top-2 父块。
+- **实测构成**：20816 块 = **16880 子块 + 3936 父块**（父块占 18.9%）。
+  早期版本里这些父块也参与召回，且过滤发生在 Python 侧——结果 Top-16 里平均 4 条是父块（**浪费 25% 槽位**），
+  现在过滤已下推到 Milvus。
 - **你实验时可以调**：把 `CHILD_CHUNK_SIZE` 调大/调小，观察召回质量和答案完整度的变化。
 
 ### 6.2 稠密 vs 稀疏 / 混合检索
@@ -386,7 +444,10 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 - **稠密（语义）**：能理解"同义改写、口语化"，但可能漏掉关键专名。
 - **稀疏（关键词）**：专名命中极准，但不懂语义。
 - **混合检索**：两路都搜，加权融合。**BGE-M3 一个模型同时产出两种向量**，所以本项目混合检索几乎"零额外成本"。
-- 权重 `DENSE_WEIGHT=0.6 / BM25_WEIGHT=0.4` 可调整——专业语料可上调稀疏权重。
+- 权重默认 `SPARSE_WEIGHT=0.7 / DENSE_WEIGHT=1.0`——**稀疏权重被刻意调高**。
+  原因：医疗语料里专名极多（"胰岛素""糖化血红蛋白""一型糖尿病"），用户提问往往直接带专名，
+  关键词精确命中的收益大于语义泛化；同时 BGE-M3 的稀疏向量是模型产出的 lexical weights，
+  质量远高于传统 BM25，值得给更高权重。纯口语化场景则相反，可下调。
 
 ### 6.3 双塔（Bi-Encoder） vs 交叉编码（Cross-Encoder）
 
@@ -397,7 +458,7 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 | 结构 | query 和 doc **各自独立编码**成向量 | query 和 doc **拼在一起**联合编码 |
 | 速度 | 快（doc 向量可离线预计算，查询只算一次） | 慢（每对都要现场算） |
 | 精度 | 中（两塔不交互，语义交互弱） | 高（联合建模，相关性判断准） |
-| 本项目用途 | **粗排**：从 2 万块里快速召回 8 条 | **精排**：对 8 条重新打分取 4 条 |
+| 本项目用途 | **粗排**：从 16880 个子块里快速召回 16 条（Top-5 子块 → 回溯父块） | **精排**：对候选父块重新打分取 Top-2 |
 
 > 结论：**粗排用双塔（快），精排用交叉编码（准）**。两步结合，既快又准——这就是工业级 RAG 的标准做法。
 
@@ -414,13 +475,16 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 
 | 痛点 | 表现 | 本项目解法 |
 |------|------|------------|
-| 检索不准 | 召回无关段落 | 混合检索 + 父子分块 + 重排序 |
+| 检索不准 | 召回无关段落 | 混合检索 + Small-to-Big 父子分块 + 重排序 |
 | 上下文缺失 | 答案断章取义 | 子块检索、父块回填上下文 |
-| 幻觉 | 编造医学知识 | 医疗 Prompt 约束"基于上下文、无依据就说不知道" |
-| 噪声进 LLM | Token 浪费、答案被带偏 | 重排序只留 Top-4 |
-| 重复问题慢 | 每次都跑全套 | FAQ/Redis 缓存直答 |
+| 幻觉 | 编造医学知识 | 医疗 Prompt 约束 + **检索为空时安全拒答（不调 LLM）** |
+| 噪声进 LLM | Token 浪费、答案被带偏 | 重排序只留 Top-2 父块 |
+| 重复问题慢 | 每次都跑全套 | 双通道：FAQ 快通道（Redis + BM25 归一化）直答 |
 | 通用闲聊也检索 | 浪费检索、答得奇怪 | BERT 意图分流，general 直接 LLM |
 | 复杂问题搜不到 | 原问题表述复杂 | LLM 自动选 hyde/subquery/backtracking 改写查询 |
+| FAQ 误答（答非所问） | 「头痛」答成「声带息肉」 | BM25 **softmax 归一化** + 阈值 0.85（先修量纲、再定阈值） |
+| 父块抢召回槽位 | Top-16 里有 4 条是 2000 字父块，浪费 25% | `chunk_type` 过滤下推到 Milvus 侧 |
+| 检索失败就幻觉 | 无依据时 LLM 硬答 | **L0/L1/L2 分层降级**（见 4.9） |
 
 ### 6.6 为什么评估也很重要
 
@@ -505,7 +569,8 @@ python scripts/train_intent.py
 
 1. **跑通最小问答**：`python main.py`，问"什么是高血压"，观察返回的 `strategy` 与 `sources`（来源内容就是喂给 LLM 的上下文）。
 2. **对比四种策略**：用 `/query` 接口分别传 `strategy=direct` 和 `strategy=hyde`，看召回的 `sources` 有何不同，理解"查询改写"的价值。
-3. **调参看变化**：把 `TOP_K_RERANK` 从 4 改成 6，重问，观察上下文变长、答案是否更全（也可能更啰嗦）。
+3. **调参看变化**：把 `TOP_K_RERANK` 从 2 改成 4，重问，观察上下文变长、答案是否更全（也可能更啰嗦）；
+   把 `FAQ_NORMALIZED_THRESHOLD` 从 0.85 降到 0.6，观察 FAQ 是否开始误答（体会"量纲没修好时阈值就是玄学"）。
 4. **跑评估**：`python scripts/evaluate_rag.py --static data/test_query/rag_evaluate_data.json`，看四项指标，思考哪项是短板。
 5. **改分块**：把 `CHILD_CHUNK_SIZE` 改成 200 和 800 各跑一次入库+问答，体会"块大小"对检索的影响。
 6. **读源码顺序**：`rag_system.py` → `retrieval.py` → `reranker.py` → `embedding_provider.py` → `milvus_store.py` → `chunk_splitter.py`。
@@ -522,11 +587,22 @@ PARENT_CHUNK_SIZE = 2000   # 父块（给 LLM 的上下文）
 CHILD_CHUNK_SIZE  = 400    # 子块（用于检索）
 CHUNK_OVERLAP     = 60     # 重叠字符，防割裂
 
-# 检索与重排
-TOP_K_RETRIEVE = 8         # 粗排召回数
-TOP_K_RERANK   = 4         # 精排最终数
-BM25_WEIGHT    = 0.4       # 稀疏(关键词)权重
-DENSE_WEIGHT   = 0.6       # 稠密(语义)权重
+# 混合检索加权融合（WeightedRanker）
+SPARSE_WEIGHT = 0.7        # 稀疏（词权）权重——医疗专名多，刻意调高
+DENSE_WEIGHT  = 1.0        # 稠密（语义）权重
+
+# 检索与重排（Small-to-Big 链路）
+TOP_K_RETRIEVE = 16        # 粗排召回数（只召回子块）
+TOP_K_CHILDREN = 5         # 子块命中数（精细定位）
+TOP_K_RERANK   = 2         # 精排最终数（Top-2 父块）
+
+# FAQ 快通道
+FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 softmax 归一化后的命中阈值
+
+# 分层降级策略
+ENABLE_CHILD_FILTER_FALLBACK = True   # L1：同粒度降级（父块现场切成子块）
+ALLOW_LLM_WHEN_NO_CONTEXT    = False  # L2：检索为空时安全拒答，不让 LLM 硬答
+DEGRADE_ALERT_LEVEL          = 1      # 降级水位告警阈值（0=不打点 1=L1及以上 2=仅L2）
 
 # 模型
 EMBED_MODEL_NAME = "BGE-M3"        # 1024 维
@@ -547,6 +623,9 @@ LLM_TEMPERATURE = 0.2              # 低温度，严谨
 | **RAG** | 检索增强生成：先检索资料再让 LLM 生成答案 |
 | **Chunking（分块）** | 把长文档切成小段，便于检索与上下文控制 |
 | **Parent-Child Chunking** | 父子分块：子块检索、父块补上下文 |
+| **Small-to-Big** | 先检索小粒度子块，再回溯大粒度父块作为生成上下文的检索范式 |
+| **Filter Pushdown（过滤下推）** | 把过滤条件下推到数据库侧执行，而非取回后再在 Python 里过滤 |
+| **Graceful Degradation（降级）** | 主路径不可用时切备用路径；本项目要求"降级路径更安全而非更粗糙" |
 | **Embedding（嵌入/向量化）** | 把文本变成定长数字向量，使语义相近的文本向量也相近 |
 | **Dense / Sparse Vector** | 稠密向量（语义）/ 稀疏向量（关键词权重） |
 | **Hybrid Search** | 混合检索：语义+关键词两路融合 |

@@ -49,12 +49,12 @@
 ### Page 9 · Content
 - Type: Content
 - Title: 在线检索流程
-- Content: 六步——FAQ缓存→意图分类→策略选择→检索合并(Top8)→重排(Top4)→生成；输出 {答案,意图,策略,来源}
+- Content: 双通道——FAQ 快通道优先（Redis → MySQL+BM25，归一化阈值 0.85）→ 未命中降级 RAG 深通道（意图分类→策略选择→混合检索 Top-16 仅子块→Small-to-Big 回溯父块→精排 Top-2→生成）；输出 {答案,意图,策略,来源,degraded}
 
 ### Page 10 · Content
 - Type: Content
 - Title: 策略与重排
-- Content: 四策略 direct/hyde/subquery/backtracking（LLM 自动选）；BGE-reranker 交叉编码精排 Top4；dense+sparse+multi-vector 混合检索提升召回
+- Content: 四策略 direct/hyde/subquery/backtracking（LLM 自动选）；BGE-reranker 交叉编码精排 Top-2 父块；dense 1.0 + sparse 0.7 加权混合检索提升召回
 
 ### Page 11 · Transition
 - Type: Transition
@@ -64,7 +64,7 @@
 ### Page 12 · Content
 - Type: Content
 - Title: 智能路由
-- Content: 意图分类 general/medical；医疗问题跳过 FAQ 直走 RAG；FAQ 关键词守卫防误答（"头痛"误命中"声带息肉"已修复）
+- Content: 双通道路由——FAQ 快通道优先（Redis 缓存 → MySQL+BM25，softmax 归一化阈值 0.85），未命中自动降级 RAG 深通道（BERT 意图分类 general/medical）；修复了"头痛"误命中"声带息肉"的 FAQ 误答（根因：BM25 评分尺度未校准，非关键词守卫补丁）
 
 ### Page 13 · Content
 - Type: Content

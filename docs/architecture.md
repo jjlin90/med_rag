@@ -14,18 +14,27 @@
    → BGE-M3 向量化(稠密+稀疏)
    → Milvus 入库
    ───────────── 离线 ─────────────
-   用户提问
-   → BERT 意图分类（已重训：区分 general / medical）
-        ├─ 通用知识(general) → 先试 FAQ 一级缓存（Redis 命中→直答；未命中→MySQL + jieba BM25，命中后写回 Redis→直答）→ 仍未命中则 LLM 直答（不检索知识库）
-        └─ 医疗咨询(medical) → 跳过 FAQ，直接走 RAG 检索增强（稠密检索+重排，避免标题 BM25 把「头痛」误匹配到无关条目）
-              → LLM 自动选检索策略
-              → Query 增强（直接检索 / HyDE / 子查询 / 回溯抽象）
-              → Milvus 混合检索（稠密+稀疏加权融合）
-              → 父块恢复 + BGE-reranker 精排
-              → 医疗专属 Prompt + 多轮历史组装
-              → LLM 严谨生成
+   用户提问（双通道架构，对齐 EduRAG）
+   → ① FAQ 快通道（优先）
+        Redis 缓存命中 → 直答
+        → 未命中走 MySQL + jieba BM25，得分 softmax 归一化（阈值 0.85）
+        → 达标直答并写回 Redis；不达标自动降级 ②
+   → ② RAG 深通道（降级路径）
+        → BERT 意图分类（general / medical，全程仅跑一次）
+        → LLM 自动选检索策略（直接检索 / HyDE / 子查询 / 回溯抽象）
+        → Milvus 混合检索（稠密+稀疏 WeightedRanker 融合，Top-16）
+        → Small-to-Big：Top-5 子块命中 → parent_id 回溯父块去重
+        → BGE-reranker 精排 Top-2
+        → 医疗专属 Prompt + 多轮历史组装
+        → LLM 严谨生成
    → 写入 MySQL 会话历史（按 session_id，保留最近 5 轮）
 ```
+
+> **分层降级策略**（retrieval.py）：检索侧按 L0 → L1 → L2 逐级兜底——
+> L0 严格 Small-to-Big（chunk_type 过滤下推，orphan 父块打点剔除）；
+> L1 同粒度降级（子块召回为空时放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）；
+> L2 安全拒答（固定话术，不调用 LLM，避免参数知识编造）。
+> 核心原则：降级路径必须比主路径**更安全**，而不是更粗糙。
 
 > 在线问答的「意图分类 → 策略选择 → 检索与合并 → 重排序 → 构建上下文 → LLM 生成」
 > 六步主流程统一封装在 `src/online_service/rag_system.py` 的 `RAGSystem` 类中（对齐 EduRAG 主流程），
@@ -50,7 +59,7 @@
 - **父块（上下文块）**：2000 字符完整段落，保留疾病整体逻辑（病因、症状、治疗体系），用于 LLM 生成阶段补全全局上下文。
 - 切片重叠 60 字符，规避语义割裂与关键信息截断。
 
-当前全量数据切出约 **20816 个块**（`data/split_docs/docs.json`）。
+当前全量数据切出约 **20816 个块**（16880 子块 + 3936 父块，`data/split_docs/docs.json`）。
 
 ### 3. 向量化与混合检索层
 
@@ -65,14 +74,16 @@
 
 **Milvus 混合检索**：
 - 同一集合存储 dense + sparse 两个向量字段，dense 用 IVF_FLAT 索引、sparse 用倒排索引。
+- schema 顶层含 `chunk_type` 字段，检索时过滤下推（新库 `chunk_type=='child'`，旧库自适应为
+  `parent_id != ""`），保证父块不抢占召回槽位。
 - 查询时用 `MilvusClient.hybrid_search` 对两路分别 ANN 检索，再用 `WeightedRanker` 按
-  `DENSE_WEIGHT=0.6` / `BM25_WEIGHT=0.4` 加权融合，去重排序。
+  `SPARSE_WEIGHT=0.7` / `DENSE_WEIGHT=1.0` 加权融合，去重排序。
 
 ### 4. 重排优化层
 
 初筛候选片段含低相关/冗余/噪声，经 **BGE-reranker-large**（`reranker.py`，FlagReranker 交叉编码）精细筛选：
-- 对「查询-候选片段」逐对打分、全局排序，取 Top-K。
-- 过滤无关与重复内容，精简送入 LLM 的上下文，降低幻觉与 Token 消耗。
+- 检索链路：Top-16 粗排召回 → Top-5 子块命中 → parent_id 回溯父块去重 → 精排 **Top-2** 父块送入生成。
+- 对「查询-候选片段」逐对打分、全局排序，过滤无关与重复内容，精简送入 LLM 的上下文，降低幻觉与 Token 消耗。
 
 ### 5. LLM 生成层
 

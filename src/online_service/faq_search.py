@@ -43,10 +43,11 @@ class FAQSearch:
             'charset': 'utf8mb4'
         }
 
-        # BM25参数
+        # BM25参数（对齐 EduRag 快通道：softmax 归一化 → [0,1] 区间 → 阈值 0.85）
         self.bm25_k1 = 1.2
         self.bm25_b = 0.75
-        self.bm25_threshold = 0.5  # 置信度阈值（raw BM25 分数，0.5 对短中文 FAQ 更合理）
+        # 归一化后的置信度阈值（softmax 后分数在 [0,1]，0.85 表示高置信命中）
+        self.bm25_threshold = config.FAQ_NORMALIZED_THRESHOLD  # 对齐 EduRag: 0.85
 
         # 初始化数据库连接
         self.connection = None
@@ -135,61 +136,52 @@ class FAQSearch:
 
     def search_faq(self, query: str, intent: str = 'unknown') -> Tuple[Optional[str], bool]:
         """
-        FAQ 一级缓存 / 二级库检索，返回答案。
+        FAQ 快通道检索（对齐 EduRag ①快通道：BM25 + Redis + MySQL）。
 
-        流程（与你描述的完全一致）：
-          1. 先在 Redis 里找（faq:{key}）——命中则直接返回答案，不再查 MySQL；
-          2. 未命中则走 MySQL BM25 检索；
-          3. 高置信度命中则把这一条 FAQ 写回 Redis，供下次直接命中；
-          4. 未命中或低置信度则返回 (None, True)，交给上游 RAG/LLM 处理。
+        流程：
+          1. Redis 一级缓存查找 answer:(query) → 命中直接返回
+          2. jieba 分词 → BM25Okapi 计算原始相关性
+          3. softmax 归一化 → argmax → best_score ∈ (0,1]
+          4. best_score ≥ 阈值(默认0.85)？→ 取答案 + 回填缓存 + need_rag=False
+          5. 未命中 → 返回 (None, True)，交给上游 RAG 深通道处理
 
         Args:
             query: 用户问题
-            intent: 意图分类结果（仅用于缓存回写，方便命中时一并返回）
+            intent: 意图分类结果（仅用于缓存回写标记）
 
         Returns:
-            (answer, need_llm): 答案和是否需要 LLM 处理
+            (answer, need_llm): 答案和是否需要走 RAG
         """
         if not self.connection or not self.cursor:
             return None, True
 
-        # 1. 一级缓存：Redis 优先（命中则直接回答，不碰 MySQL）
+        # 1. 一级缓存：Redis 优先（对齐 EduRag "Redis 查缓存 answer:(query)"）
         faq_key = faq_cache_key(query)
         cached = self.cache.get(faq_key)
         if cached and cached.get('type') == 'faq':
-            logger.info(f"FAQ Redis 命中，直接返回: {query}")
+            logger.info(f"FAQ Redis 缓存命中，直接返回: {query}")
             return cached.get('answer'), False
 
-        # 2. 二级库：MySQL BM25 检索
+        # 2. 二级库：jieba 分词 → BM25 → softmax 归一化
         try:
-            faq_scores = self.bm25_index.search(query, k=5)
+            faq_scores = self.bm25_index.search_normalized(query, k=5)
 
             if not faq_scores:
                 return None, True
 
-            # 3. 计算置信度并选择最佳匹配
-            # 注意：BM25Index 返回的是文档列表下标，不是数据库主键
+            # 3. 取归一化后的最佳匹配
             best_score, best_index = faq_scores[0]
             best_faq_id = self.faq_id_map.get(best_index)
             if best_faq_id is None:
                 logger.error(f"FAQ index {best_index} has no corresponding db id")
                 return None, True
 
-            # 如果置信度低于阈值，返回None
+            # 4. 阈值判断（softmax 后 [0,1]，0.85 表示高置信）
             if best_score < self.bm25_threshold:
-                logger.info(f"FAQ confidence {best_score:.3f} below threshold {self.bm25_threshold}")
+                logger.info(f"FAQ 归一化置信度 {best_score:.3f} < 阈值 {self.bm25_threshold}，降级到 RAG")
                 return None, True
 
-            # 3.5 相关性守卫：查询必须与 FAQ 问题共享至少一个有效关键词（长度≥2、去标点），
-            #     否则视为误匹配（例如“头痛”不应命中“声带息肉，结节…”），回退到 RAG/LLM。
-            #     原始 BM25 分数在 ~7 量级、阈值 0.5 拦不住任何东西，必须靠词义重叠兜底。
-            matched_question = self.bm25_index.documents[best_index] if self.bm25_index else ''
-            if not self._question_relevant(query, matched_question):
-                logger.info(f"FAQ 命中被相关性守卫拒绝（查询与问题无共享关键词）: "
-                            f"query={query!r} faq_q={matched_question!r}")
-                return None, True
-
-            # 4. 获取答案
+            # 5. 获取答案
             self.cursor.execute("SELECT answer FROM faq WHERE id = %s", (best_faq_id,))
             result = self.cursor.fetchone()
 
@@ -198,7 +190,7 @@ class FAQSearch:
 
             answer = result['answer']
 
-            # 5. 写回 Redis 一级缓存（带 type=faq 标记，避免与 RAG 缓存混淆）
+            # 6. 写回 Redis 一级缓存（对齐 EduRag "取答案 + 回填缓存"）
             self.cache.set(faq_key, {
                 'type': 'faq',
                 'answer': answer,
@@ -207,21 +199,18 @@ class FAQSearch:
                 'intent': intent,
                 'strategy': 'faq',
                 'faq_id': best_faq_id,
-                'need_llm': False,
-            }, ttl=3600)  # 缓存1小时
+                'need_rag': False,
+            }, ttl=self.config.FAQ_CACHE_TTL)
 
-            logger.info(f"FAQ 命中并写入 Redis: ID {best_faq_id}, confidence {best_score:.3f}")
+            logger.info(
+                f"FAQ 快通道命中: ID={best_faq_id}, "
+                f"normalized_score={best_score:.3f}, threshold={self.bm25_threshold}"
+            )
             return answer, False
 
         except Exception as e:
             logger.error(f"FAQ search failed: {str(e)}")
             return None, True
-
-    def _question_relevant(self, query: str, question: str) -> bool:
-        """查询与 FAQ 问题是否共享有效关键词（去掉标点/单字后长度≥2 的词）。"""
-        def _sig_tokens(text: str) -> set:
-            return {t for t in self.bm25_index._tokenize(text) if len(t) >= 2}
-        return len(_sig_tokens(query) & _sig_tokens(question)) > 0
 
     def add_faq(self, question: str, answer: str, category: str = None,
                 keywords: str = None) -> bool:
@@ -447,7 +436,7 @@ class BM25Index:
         self.idf = idf
 
     def search(self, query: str, k: int = 5) -> List[Tuple[float, int]]:
-        """搜索查询"""
+        """搜索查询（返回原始 BM25 分数）"""
         if not self.documents:
             return []
 
@@ -461,6 +450,38 @@ class BM25Index:
         # 排序并返回Top-K
         scores.sort(key=lambda x: x[0], reverse=True)
         return scores[:k]
+
+    def search_normalized(self, query: str, k: int = 5) -> List[Tuple[float, int]]:
+        """
+        搜索查询并返回 **softmax 归一化** 后的分数（对齐 EduRag 快通道）。
+
+        原始 BM25 分数量级取决于语料（当前 ~7.x），阈值难以跨场景通用。
+        softmax 将任意量级的分数压缩到 (0,1] 区间：
+          - 最高分接近 1.0（远超其他候选时）
+          - 多个候选分数相近时，大家均分概率质量
+          - 阈值 0.85 表示「最佳匹配显著优于其余候选」
+
+        Returns:
+            [(normalized_score, doc_index), ...]，按归一化分数降序
+        """
+        raw_results = self.search(query, k=k)
+        if not raw_results:
+            return []
+
+        raw_scores = np.array([s for s, _ in raw_results], dtype=np.float64)
+
+        # softmax（数值稳定：减去最大值防止溢出）
+        shifted = raw_scores - np.max(raw_scores)
+        exp_scores = np.exp(shifted)
+        softmax_probs = exp_scores / np.sum(exp_scores)
+
+        # 取 argmax 的归一化分数作为 best_score（对齐 EduRag "argmax → best_score"）
+        normalized_results = [
+            (float(softmax_probs[i]), idx) for i, (_, idx) in enumerate(raw_results)
+        ]
+        normalized_results.sort(key=lambda x: x[0], reverse=True)
+
+        return normalized_results
 
     def _tokenize(self, text: str) -> List[str]:
         """分词"""
