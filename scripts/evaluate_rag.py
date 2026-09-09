@@ -62,7 +62,9 @@ def print_and_save(result: Dict[str, Any], out_json: str, out_csv: str) -> None:
     print(f"  含标准答案 gt   : {result.get('has_ground_truth')}")
     for k in metrics:
         print(f"  {k:<18}: {avg.get(k, 0):.3f}")
-    print(f"  成功评估/总数   : {result.get('total', 0)}/{result.get('total', 0)}")
+    print(f"  四项完整/总数   : {result.get('complete_count', result.get('total', 0))}/{result.get('total', 0)}")
+    if result.get("valid_counts"):
+        print(f"  各指标有效数    : {result['valid_counts']}")
     ps = result.get("pipeline_stats")
     if ps:
         print("  ---- 管线侧统计（不计入 Ragas 分数，用于判读）----")
@@ -76,7 +78,10 @@ def print_and_save(result: Dict[str, Any], out_json: str, out_csv: str) -> None:
     scores = result.get("scores", [])
     print("\n逐条明细：")
     for i, s in enumerate(scores, 1):
-        parts = "  ".join(f"{k}={s.get(k, 0):.3f}" for k in metrics)
+        parts = "  ".join(
+            f"{k}={s[k]:.3f}" if isinstance(s.get(k), (int, float)) else f"{k}=NA"
+            for k in metrics
+        )
         q = s.get("question", "")[:42]
         print(f"  [{i}] {q:<44} {parts}")
 
@@ -272,7 +277,18 @@ def run_static_eval(config: Config, items: List[Dict[str, Any]]) -> Dict[str, An
     print(f"BGE-M3 就绪，耗时 {time.time() - t0:.1f}s")
 
     print("\n开始 Ragas 评估 ...")
-    return evaluator.evaluate_dataset(norm, show_progress=True)
+    result = evaluator.evaluate_dataset(norm, show_progress=True)
+    gen_models = sorted({
+        str(it.get("_gen_model")) for it in items if it.get("_gen_model")
+    })
+    result["evaluation_config"] = {
+        "judge_model": config.LLM_MODEL_NAME,
+        "generation_models": gen_models,
+        "self_judge": config.LLM_MODEL_NAME in gen_models,
+        "note": ("same-model judge; absolute scores may contain self-preference bias"
+                 if config.LLM_MODEL_NAME in gen_models else "independent judge"),
+    }
+    return result
 
 
 def main():
@@ -294,6 +310,9 @@ def main():
     parser.add_argument("--offset", type=int, default=0,
                         help="跳过前 N 条（配合 --limit 做分块评估："
                              "取 items[offset:offset+limit]，每块可换不同 judge 模型）")
+    parser.add_argument("--indices", default=None,
+                        help="仅静态评估：按 1-based 序号选择非连续样本，"
+                             "例如 18,86,92；不可与 --offset/--limit 同用")
     args = parser.parse_args()
 
     config = Config()
@@ -306,6 +325,28 @@ def main():
             sys.exit(1)
         print(f"静态评估模式：{args.static}\n")
         items = load_json(args.static)
+        if args.indices:
+            if args.offset or args.limit:
+                parser.error("--indices 不可与 --offset/--limit 同用")
+            try:
+                selected = [int(v.strip()) for v in args.indices.split(",") if v.strip()]
+            except ValueError:
+                parser.error("--indices 必须是逗号分隔的整数")
+            invalid = [i for i in selected if i < 1 or i > len(items)]
+            if invalid:
+                parser.error(f"--indices 越界: {invalid}，数据集共 {len(items)} 条")
+            items = [items[i - 1] for i in selected]
+            print(f"静态评估序号：{selected}，共 {len(items)} 条\n")
+        else:
+            if args.offset:
+                items = items[args.offset:]
+            if args.limit:
+                items = items[:args.limit]
+        if (args.offset or args.limit) and not args.indices:
+            print(
+                f"静态评估区间：[{args.offset}, "
+                f"{args.offset + len(items)})，共 {len(items)} 条\n"
+            )
         result = run_static_eval(config, items)
     else:
         if not os.path.exists(args.test_set):

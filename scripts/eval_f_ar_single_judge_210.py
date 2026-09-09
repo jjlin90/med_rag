@@ -1,7 +1,7 @@
 """
-全量 210 题 F+AR 配对复评（单裁判 glm-4.7，扁平并发 + 重试退避）
+全量 210 题 F+AR 配对复评（独立单裁判，扁平并发 + 重试退避）
 ==============================================================
-- 单一固定裁判 glm-4.7 同时对「原答案」和「grounding 答案」打分（配对比较，裁判偏差两次抵消）
+- 单一固定裁判同时对「原答案」和「grounding 答案」打分（配对比较，裁判偏差两次抵消）
 - 扁平 ThreadPoolExecutor（max_workers 可控），每题 4 次顺序调用，避免嵌套死锁
 - 每次调用失败自动指数退避重试（应对 429/timeout）
 用法：python scripts/eval_f_ar_single_judge_210.py [--n N] [--workers W]
@@ -20,9 +20,9 @@ import numpy as np
 from openai import OpenAI
 
 ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
-JUDGE = os.getenv("EVAL_JUDGE", "glm-4.7")
+JUDGE = os.getenv("EVAL_JUDGE", "glm-4.5-air")
 # thinking 类模型需 >=200，否则推理 token 吃满配额导致 content 为空
-MAX_TOKENS = int(os.getenv("EVAL_MAX_TOKENS", "256"))
+MAX_TOKENS = int(os.getenv("EVAL_MAX_TOKENS", "1024"))
 ORIG = PROJECT_ROOT / "data/test_query/eval_answers_210.json"
 GRND_D = PROJECT_ROOT / "data/test_query/eval_answers_210_grounded.json"
 OUT = PROJECT_ROOT / "data/test_query/_eval_210_single_judge.json"
@@ -84,6 +84,11 @@ def score(c, prompt, max_retry=3):
             m = re.search(r'"score"\s*:\s*(\d+\.?\d*)', txt)
             return min(1.0, max(0.0, float(m.group(1)))) if m else 0.0
         except Exception as e:
+            # 1113 是账户/资源包不可用，不是瞬时限流；重试只会制造大量
+            # 无效请求。返回 None，由整题失败逻辑显式剔除。
+            if "1113" in str(e) or "无可用资源包" in str(e) or "余额不足" in str(e):
+                print(f"    [FATAL] judge resource unavailable: {str(e)[:120]}", flush=True)
+                return None
             if attempt == max_retry:
                 # 不再静默返回 0.0：打印失败，避免整批结果无声失效
                 print(f"    [FAIL] {type(e).__name__}: {str(e)[:90]}", flush=True)
@@ -114,6 +119,10 @@ def main():
     p.add_argument("--grnd", type=str, default=str(GRND_D),
                    help="对照答案文件（默认离线 grounded；live 复测传 eval_answers_210_live.json）")
     p.add_argument("--out", type=str, default=str(OUT))
+    p.add_argument(
+        "--allow-self-judge", action="store_true",
+        help="允许裁判与生成模型相同（仅调试；正式报告不应开启）",
+    )
     a = p.parse_args()
 
     grnd_path = Path(a.grnd)
@@ -122,9 +131,22 @@ def main():
     orig = json.loads(ORIG.read_text(encoding="utf-8"))
     om = {it["question"]: it for it in orig}
     gm = {}
+    grounded_models = set()
     if grnd_path.exists():
         for g in json.loads(grnd_path.read_text(encoding="utf-8")):
             gm[g["question"]] = g.get("answer") or g.get("grounded_answer", "")
+            model = (g.get("_gen_model") or "").strip()
+            if model:
+                grounded_models.add(model)
+
+    # 2026-08-30 的 live 结果曾误用 glm-4.5-air 同时生成和裁判，造成自评
+    # 偏好风险。正式 A/B 默认 fail-fast，不能只靠注释约定不同模型。
+    if JUDGE in grounded_models and not a.allow_self_judge:
+        models = ", ".join(sorted(grounded_models))
+        p.error(
+            f"裁判 {JUDGE!r} 与 grounded 生成模型重合（{models}）。"
+            "请更换 EVAL_JUDGE；仅调试时才使用 --allow-self-judge。"
+        )
 
     items = [(q, om[q].get("answer", ""), gm.get(q, ""), om[q].get("contexts", [])) for q in om]
     if a.n:
@@ -132,6 +154,18 @@ def main():
 
     print(f"F+AR 单裁判配对 | {JUDGE} | {len(items)} 题 | workers={a.workers}", flush=True)
     c = OpenAI(base_url=ZHIPU_BASE, api_key=os.getenv("LLM_API_KEY", ""))
+    # 在提交 210×4 个并发任务前做一次极小探测。资源包未绑定时立即退出，
+    # 避免每个 worker 都走完整重试链。
+    try:
+        c.chat.completions.create(
+            model=JUDGE,
+            messages=[{"role": "user", "content": "只回复数字1"}],
+            temperature=0.01, max_tokens=8, timeout=20,
+        )
+    except Exception as e:
+        if "1113" in str(e) or "无可用资源包" in str(e) or "余额不足" in str(e):
+            p.error(f"裁判 {JUDGE!r} 的余额或资源包不可用：{str(e)[:160]}")
+        raise
     t0 = time.time()
     rows = [None] * len(items)
     lock = Lock()
@@ -177,7 +211,8 @@ def main():
     print(f"{'-'*35}", flush=True)
     print(f"综合   {oc:>7.3f} {nc:>7.3f} {nc-oc:>+7.3f}", flush=True)
 
-    out = {"judge": JUDGE, "method": "direct_openai_single_judge_flat_concurrent",
+    out = {"judge": JUDGE, "method": "custom_direct_llm_judge_flat_concurrent",
+           "metric_compatibility": "not directly comparable to Ragas scores",
            "n": len(valid), "n_failed": n_fail, "workers": a.workers,
            "max_tokens": MAX_TOKENS,
            "orig_file": str(ORIG), "grnd_file": str(grnd_path),

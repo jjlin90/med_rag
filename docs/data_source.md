@@ -14,10 +14,11 @@
 |------|------|------|
 | 清洗后文档 | `data/clean_md/` | 约 **2570 篇** Markdown |
 | 分块数据集 | `data/split_docs/docs.json` | 约 **20816 个**文本块 |
-| 向量库 | Milvus 集合 `med_msd_consumer_chunk` | 与分块一一对应 |
+| 向量库 | Milvus 集合 `med_msd_consumer_chunk` | 目标为写入分块向量；本次未启动 Milvus，实体数未复核 |
 
-分块构成（父子分层分块）：**16880 个子块**（400 字符，参与检索）+ **3936 个父块**（2000 字符，提供生成上下文，占 18.9%）。
-检索时通过 `chunk_type` 字段过滤下推，父块不占用召回名额。
+分块构成（按现存 `docs.json` 的 `parent_id` 统计）：**16880 个逻辑子块**（400 字符）+ **3936 个逻辑父块**（2000 字符，占 18.9%）。
+
+现存 `docs.json` 是显式 `chunk_type` 修复前生成的产物，顶层该字段均为 `child`；判断父子应以 `parent_id` 是否为空为准。新代码会正确写入 `chunk_type`，但重新使用新 schema 入库前必须重生成分块文件。检索代码支持新 schema 的 `chunk_type == "child"` 和旧 schema 的 `parent_id != ""`；本次审查时 Milvus 未运行，不能把线上 collection 状态写成已验证。
 
 内容主要类目：
 

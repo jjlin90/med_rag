@@ -19,6 +19,7 @@ class Config:
         # ===================== 项目基础路径配置 =====================
         # 当前文件：src/config/settings.py
         self.BASE_DIR = Path(__file__).parent.parent.parent
+        load_dotenv(self.BASE_DIR / ".env")
 
         # 原始MSD解压资源目录
         self.RAW_MSD_DIR = self.BASE_DIR / "data/raw/MSDZHConsumerMedicalTopics"
@@ -128,7 +129,6 @@ class Config:
         self.LLM_GROUNDING = os.getenv("LLM_GROUNDING", "true").lower() in ("1", "true", "yes", "on")
 
         # ===================== LLM密钥&接口地址（从.env加载） =====================
-        load_dotenv(self.BASE_DIR / ".env")
         self.LLM_API_KEY = os.getenv("LLM_API_KEY", "")
         self.LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 

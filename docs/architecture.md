@@ -23,8 +23,8 @@
         → BERT 意图分类（general / medical，全程仅跑一次）
         → LLM 自动选检索策略（直接检索 / HyDE / 子查询 / 回溯抽象）
         → Milvus 混合检索（稠密+稀疏 WeightedRanker 融合，Top-16）
-        → Small-to-Big：Top-5 子块命中 → parent_id 回溯父块去重
-        → BGE-reranker 精排 Top-2
+        → Small-to-Big：Top-5 子块命中 → parent_id 聚合父块
+        → BGE-reranker 对每个父块的最佳命中子块精排 → 返回 Top-2 完整父块
         → 医疗专属 Prompt + 多轮历史组装
         → LLM 严谨生成
    → 写入 MySQL 会话历史（按 session_id，保留最近 5 轮）
@@ -59,7 +59,7 @@
 - **父块（上下文块）**：2000 字符完整段落，保留疾病整体逻辑（病因、症状、治疗体系），用于 LLM 生成阶段补全全局上下文。
 - 切片重叠 60 字符，规避语义割裂与关键信息截断。
 
-当前全量数据切出约 **20816 个块**（16880 子块 + 3936 父块，`data/split_docs/docs.json`）。
+当前 `data/split_docs/docs.json` 共 **20816 条记录**，按 `parent_id` 语义统计为 16880 子块 + 3936 父块。该存量文件生成于父块 `chunk_type` 修复前，顶层 `chunk_type` 值不可用于统计；重新执行离线分块后，新文件会正确写入 `parent` / `child`。
 
 ### 3. 向量化与混合检索层
 
@@ -82,7 +82,7 @@
 ### 4. 重排优化层
 
 初筛候选片段含低相关/冗余/噪声，经 **BGE-reranker-large**（`reranker.py`，FlagReranker 交叉编码）精细筛选：
-- 检索链路：Top-16 粗排召回 → Top-5 子块命中 → parent_id 回溯父块去重 → 精排 **Top-2** 父块送入生成。
+- 检索链路：Top-16 粗排召回 → Top-5 子块命中 → `parent_id` 聚合父块 → 用每个父块的最佳命中子块精排 → 返回 **Top-2** 完整父块用于生成。
 - 对「查询-候选片段」逐对打分、全局排序，过滤无关与重复内容，精简送入 LLM 的上下文，降低幻觉与 Token 消耗。
 
 ### 5. LLM 生成层

@@ -46,7 +46,7 @@
   - 痛点：通用大模型医学问答存在**幻觉、引用不可靠、缺权威出处**三大问题；用户难以判断答案是否可信。
   - 目标：构建"**答案有据可依、可追溯**"的医疗科普问答系统，让每一条回复都能回溯到默沙东手册权威内容。
   - 解法：采用 RAG（检索增强生成）——先召回权威知识片段，再由大模型组织成自然语言回答。
-  - 价值：高频问题缓存直答省成本；医疗问题走检索保证权威；支持多轮连贯对话。
+  - 价值：高频问题缓存直答减少模型调用；医疗问题在 FAQ 未命中后进入受约束检索链路；支持多轮上下文。
 - **Content Density**: Medium
 - **Narrative Role**: 用痛点引出项目存在的必要性，确立价值锚点。
 - **Image Requirements**: 无（卡片 + 要点布局）
@@ -60,7 +60,7 @@
 - **Content Structure**: Data 结构——
   - 来源：**《默沙东诊疗手册（大众版）》**，全球权威、公开、公益医学科普平台，无商业诊疗导向。
   - 规模：清洗后约 **2570 篇** Markdown；分块后约 **20816 个**文本块。
-  - 粒度：单块平均 **462–555** 字符，最大约 **1998** 字符；Milvus 集合 `med_msd_consumer_chunk` 与分块一一对应。
+  - 粒度：单块平均 **462–555** 字符，最大约 **1998** 字符；本次审查未启动 Milvus，collection 实体数需在线复核。
   - 覆盖：内分泌（糖尿病/甲亢）、心脑血管、呼吸、消化、骨科、皮肤、儿科、妇科等。
   - 合规：仅用于技术学习与学术演示，无患者隐私、无侵权爬取。
 - **Content Density**: Medium
@@ -101,7 +101,7 @@
 - **Content Structure**: Process 结构——
   - 步骤1 清洗：去除导航/广告/版权，得到约 **2570 篇**干净 Markdown。
   - 步骤2 父子分块：子块 **400** 字符（精准召回）、父块 **2000** 字符（完整上下文），约 **20816** 块。
-  - 步骤3 向量化：BGE-M3 生成**稠密 + 稀疏 + 多向量**，表达能力更强。
+  - 步骤3 向量化：BGE-M3 生成**稠密 + 稀疏**表示；ColBERT 多向量未启用。
   - 步骤4 入库：写入 Milvus 集合 `med_msd_consumer_chunk`，建立混合索引。
   - 成功标准：检索延迟可控、召回率满足在线问答需求。
 - **Content Density**: Medium
@@ -119,7 +119,7 @@
   - ② 意图分类：BERT 区分 general / medical。
   - ③ 策略选择：LLM 自动选 direct/hyde/subquery/backtracking。
   - ④ 检索合并：Milvus 混合检索，粗排 Top-16（过滤下推，只召回子块）。
-  - ⑤ Small-to-Big：Top-5 子块 → parent_id 回溯父块去重 → BGE-reranker 交叉编码精排 Top-2。
+  - ⑤ Small-to-Big：Top-5 子块 → parent_id 回溯父块去重 → BGE-reranker 对最佳命中子块证据打分 → 返回 Top-2 完整父块。
   - ⑥ 生成：医疗 Prompt + 多轮历史 → 返回 {答案, 意图, 策略, 来源}。
 - **Content Density**: Heavy
 - **Narrative Role**: 展示系统核心运转机制，是技术架构的高光页。
@@ -133,9 +133,9 @@
 - **Selected Template**: 
 - **Content Structure**: Comparison 结构——
   - 四种检索策略（LLM 自动选）：direct（直接向量检索）、hyde（假设性文档增强）、subquery（子问题拆解）、backtracking（回溯纠错）。
-  - 重排序：BGE-reranker 作为 CrossEncoder，对回溯出的候选父块做精细相关性打分，输出 Top-2。
+  - 重排序：BGE-reranker 作为 CrossEncoder，对每个候选父块的最佳命中子块证据打分，输出对应的 Top-2 完整父块。
   - 混合检索：dense（语义 1.0）+ sparse（词权 0.7）加权融合，提升医学同义表述与专名命中（ColBERT 未启用）。
-  - 收益：相比单向量 + 无重排，答案相关性/可信度显著提升。
+  - 当前结果：最新 210 题 Ragas 为 F=0.8163、AR=0.5007、CP=0.8405、CR=0.7619、综合 0.7299；尚未完成单向量/无重排的严格 A/B，因此不直接归因。
 - **Content Density**: Medium
 - **Narrative Role**: 解释"为什么检索得准"，突出策略与精排的工程价值。
 - **Image Requirements**: 无（策略对比卡片 + 重排说明）
@@ -160,8 +160,8 @@
 - **Content Structure**: Concept 结构——
   - 意图分类：bert-base-chinese 微调，输出 general / medical 及置信度。
   - 路由规则：**所有问题先过 FAQ 快通道**（Redis → MySQL+BM25，softmax 归一化阈值 0.85），未命中才降级 RAG 深通道；深通道内再由 BERT 判定 general（直答）/ medical（检索）。
-  - FAQ 守卫：查询须与 FAQ 问题共享有效关键词，否则回退 RAG，杜绝标题 BM25 误答（如"头痛"误命中"声带息肉"已修复）。
-  - 收益：高频问题缓存直答省成本，医疗问题检索保权威，错误命中趋近于零。
+  - FAQ 判定：BM25 分数经 softmax 归一化，达到 0.85 才命中；当前代码不依赖关键词守卫。
+  - 收益：高频问题缓存直答减少调用；未命中进入受约束 RAG。误匹配风险降低，但仍需持续回归。
 - **Content Density**: Medium
 - **Narrative Role**: 体现系统的"判断力"，区别于朴素 RAG。
 - **Image Requirements**: 无（路由决策图 + 守卫说明）
@@ -191,7 +191,8 @@
   - 评估框架：Ragas 自动评估生成质量。
   - 四指标：faithfulness（忠实度，答案不杜撰）、answer_relevancy（回答相关性）、context_precision（上下文精确度）、context_recall（上下文召回率）。
   - 闭环：离线评估 → 定位弱项 → 调参（分块/策略/重排）→ 复测。
-  - 下一步：将评估分数持续采集，建立量化看板，指导迭代。
+  - 当前结果：210/210 四指标完整，综合 0.7299；主裁判 GLM-4.6V，少量失败项由 deepseek-v4-flash 补齐。
+  - 下一步：建立量化看板，并补单一独立裁判全量配对复评与人工抽检。
 - **Content Density**: Medium
 - **Narrative Role**: 用评估维度证明系统"可度量、可改进"。
 - **Image Requirements**: 无（四指标卡片）
@@ -206,8 +207,8 @@
   - 可运行：离线建库 + 在线 API（端口 8005）+ Streamlit 前端（8501）端到端打通。
   - 稳定性：修复 Windows uv venv 缺 VC++ 运行时导致的原生库崩溃（自包含 DLL 8 个）。
   - 可用性：修复 FAQ 误答缺陷（BM25 softmax 归一化 + 阈值 0.85，从评分尺度根因解决）；检索失败时分层降级（L0/L1/L2），不再让 LLM 凭空作答。
-  - 中间件：Milvus / Redis（Docker，密码 1234）/ MySQL 已联通并验证。
-  - 关键数字：2570 篇文档、20816 块、BGE-M3 多向量、六步流程。
+  - 中间件：Milvus / Redis / MySQL 均由环境变量配置；本次文档审查未启动服务，不声明当前联通状态。
+  - 关键数字：2570 篇文档、20816 块、BGE-M3 稠密/稀疏双表示、六步流程。
 - **Content Density**: Medium
 - **Narrative Role**: 汇总"已经做成了什么"，形成阶段成果结论。
 - **Image Requirements**: 无（成果清单 + 关键数字）

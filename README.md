@@ -5,15 +5,15 @@
 
 ## 核心特性
 
-- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，从机制上杜绝「头痛」误命中「声带息肉」式答非所问；②未命中自动降级 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），意图分类全程只跑一次。
+- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，降低「头痛」误命中「声带息肉」式答非所问风险；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），意图分类全程只跑一次。
 - **混合检索**：BGE-M3 一次前向同时产出**稠密向量**（语义）+**稀疏向量**（词项权重），在 Milvus 中按 sparse 0.7 / dense 1.0 加权融合（WeightedRanker），兼顾语义理解与关键词命中。
-- **Small-to-Big 父子分块**：400 字符子块负责「精准检索」，2000 字符父块负责「给 LLM 完整上下文」；检索链路 Top-16 粗排召回 → Top-5 子块命中 → parent_id 回溯父块去重 → BGE-reranker 精排 Top-2。
-- **chunk_type 过滤下推**：schema 顶层 `chunk_type` 字段 + 自适应探测（新库 `chunk_type=='child'`，旧库 `parent_id != ""`），父块不参与召回，20816 条旧数据无需重建集合，召回槽位浪费率 25% → 0。
+- **Small-to-Big 父子分块**：400 字符子块负责精准检索，2000 字符父块负责生成上下文；Top-16 粗排后取 Top-5 子块，按 `parent_id` 聚合，每个父块用最高分命中子块参与 BGE-reranker 精排，最终返回 Top-2 完整父块。
+- **子块过滤下推**：新建集合使用顶层 `chunk_type=='child'`，旧集合回退为 `parent_id != ""`。代码已避免父块抢占 Top-K；当前本机 Milvus 未启动，实时库状态需启动后运行 `scripts/check_chunk_type_filter.py --with-search` 复核。
 - **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 安全拒答（固定话术，**不调用 LLM**，避免参数知识编造）；降级水位经 `/health` 暴露，基础设施故障的降级结果不写缓存。
 - **GPU 加速**：向量化/重排自动使用 CUDA（fp16），离线入库从纯 CPU 的十余小时降到约 30 分钟。
 - **LLM 自动选策略**：医疗咨询由大模型自动判断检索策略（直接检索 / HyDE / 子查询 / 回溯抽象），无需用户手动选择。
 - **多轮会话持久化**：MySQL `conversations` 表按 `session_id` 留存最近 5 轮，支持跨刷新续聊。
-- **RAG 评估（Ragas）**：复用本地 BGE-M3 与 DashScope 跑 faithfulness / answer_relevancy / context_precision / context_recall 四项指标。
+- **RAG 评估（Ragas）**：本地 BGE-M3 + OpenAI 兼容裁判接口评估四项指标。当前 210/210 完整报告：Faithfulness 0.8163、Answer Relevancy 0.5007、Context Precision 0.8405、Context Recall 0.7619，等权综合 0.7299；主裁判为 GLM-4.6V，缺失单元由 DeepSeek 补评，报告保留逐项裁判来源。
 
 ## 项目结构
 
@@ -64,7 +64,7 @@ med_rag/
 ├── data/                     # 数据（git 已屏蔽）
 │   ├── raw/                  # 原始 MSD 资源
 │   ├── clean_md/             # 清洗后 Markdown（约 2570 篇）
-│   ├── split_docs/           # 分块 JSON（约 20816 块）
+│   ├── split_docs/           # 20816 条记录（16880 子块 + 3936 父块）
 │   └── test_query/           # 测试集 / 评估数据
 └── docs/                     # architecture.md / data_source.md
 ```
@@ -80,8 +80,8 @@ med_rag/
 | 策略选择 | LLM 自动（direct / hyde / subquery / backtracking） |
 | 会话存储 | MySQL(PyMySQL) conversations 表 |
 | 缓存/FAQ | Redis + MySQL(PyMySQL) + jieba BM25 |
-| RAG 评估 | Ragas 0.2.x（BGE-M3 嵌入 + DashScope LLM） |
-| LLM | OpenAI 兼容接口（如阿里云 DashScope） |
+| RAG 评估 | Ragas 0.2.x（本地 BGE-M3 嵌入 + OpenAI 兼容裁判） |
+| LLM | OpenAI 兼容接口，模型由 `.env` 的 `LLM_MODEL_NAME` 指定 |
 | 依赖管理 | uv + pyproject.toml |
 
 ## 快速开始

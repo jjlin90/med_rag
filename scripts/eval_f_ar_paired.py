@@ -37,7 +37,7 @@ import numpy as np
 SRC = PROJECT_ROOT / "data/test_query/eval_final_merged.json"
 ORIG_ANSWERS = PROJECT_ROOT / "data/test_query/eval_answers_210.json"  # 原始 210 条答案
 ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
-DEFAULT_JUDGE = "glm-4.7"
+DEFAULT_JUDGE = "glm-4.5-air"
 DEFAULT_GEN_MODELS = ["deepseek-v4-pro-202606", "glm-5"]  # TokenHub 生成链
 
 STRICT_SYS = (

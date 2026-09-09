@@ -4,15 +4,16 @@
 240 万 token，单个模型通常只有 100 万）。解决办法是把测试集切成互不相交的
 若干块，每块换一个模型打分，最后合并。
 
-为什么要这样设计而不是"一个模型硬跑"：
-- 分块后每个模型的开销可预算、可控，不会中途额度耗尽导致大面积 0 分；
-- 多个厂商模型混合评分，反而能**度量裁判方差**——同一批数据不同裁判打出
-  的分差，本身就是评估方法学的一个结果，比单一裁判的绝对值更有说服力。
+这样做可让每个模型的开销可预算、可控，避免中途额度耗尽产生大面积 0 分。
+
+重要：各模型评的是互不相交的题块，这叫“多裁判路由”，不是 ensemble。
+模型均值差同时混入了题目难度差，不能解释为纯粹的裁判方差。真正的 ensemble
+需要每一道题都由相同的一组裁判评分后再聚合。
 
 合并时做三件事：
 1. 拼接所有块的逐条明细（按 question 去重，防止块之间有重叠）；
 2. 计算全局四项指标均值 + 等权加权综合；
-3. 输出**每个裁判的分块均值与极差**，用于判读裁判间一致性。
+3. 输出**每个裁判负责题块的均值与极差**，仅作运行诊断。
 
 用法：
     python scripts/merge_eval_chunks.py \
@@ -97,7 +98,7 @@ def main():
     overall = {m: statistics.mean([s.get(m, 0) for s in all_scores]) for m in METRICS}
     composite = statistics.mean(overall.values())
 
-    # 裁判间一致性：各裁判 composite 的极差与标准差
+    # 路由题块间差异：同时包含裁判口径和题目难度，不得称为裁判方差。
     comps = [j["composite"] for j in per_judge if j["n_effective"] > 0]
     judge_spread = {
         "n_judges": len(comps),
@@ -109,7 +110,11 @@ def main():
 
     out = {
         "engine": "ragas",
-        "mode": "multi-judge-chunked",
+        "mode": "multi-judge-routed-chunks",
+        "aggregation_note": (
+            "Each question was scored by one routed judge. This is not a per-item "
+            "ensemble; between-chunk spread is confounded by sample difficulty."
+        ),
         "n_total": len(all_scores),
         "n_duplicate_dropped": dup,
         "average": {m: round(overall[m], 4) for m in METRICS},
@@ -144,12 +149,12 @@ def main():
         print(f"  {m:<20}: {overall[m]:.4f}")
     print(f"  {'composite':<20}: {composite:.4f}")
     print("-" * 78)
-    print("各裁判分块表现（用于度量裁判方差）:")
+    print("各裁判负责题块的表现（混入题目难度，仅作运行诊断）:")
     for j in per_judge:
         print(f"  {j['judge']:<24} n={j['n_effective']:<4} "
               f"composite={j['composite']:.4f}  {j['average']}")
     print("-" * 78)
-    print(f"裁判间 composite 极差={judge_spread['composite_range']:.4f}  "
+    print(f"路由题块 composite 极差={judge_spread['composite_range']:.4f}  "
           f"标准差={judge_spread['composite_stdev']:.4f}  "
           f"（{judge_spread['n_judges']} 个裁判）")
     print("=" * 78)

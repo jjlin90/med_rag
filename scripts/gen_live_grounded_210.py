@@ -38,25 +38,26 @@ from src.online_service.llm_generator import LLMGenerator
 
 GEN_MODEL = "glm-4.5-air"          # 生成器（≠ 裁判 glm-4.7，避免自评偏好）
 ORIG = ROOT / "data/test_query/eval_answers_210.json"
-OUT = ROOT / "data/test_query/eval_answers_210_live.json"
+OUT = ROOT / "data/test_query/eval_answers_210_grounded_v2.json"
 
 _TLS = {}
 
 
-def make_gen():
+def make_gen(model, temperature):
     """每线程独立 LLMGenerator 实例，避免并发共享 client。"""
     import threading
     tid = threading.get_ident()
-    if tid not in _TLS:
+    key = (tid, model, temperature)
+    if key not in _TLS:
         cfg = Config()
-        cfg.LLM_MODEL_NAME = GEN_MODEL
+        cfg.LLM_MODEL_NAME = model
         cfg.LLM_GROUNDING = True          # 线上严格 grounding prompt
-        cfg.LLM_TEMPERATURE = 0.2         # 与线上一致
-        _TLS[tid] = LLMGenerator(cfg)
-    return _TLS[tid]
+        cfg.LLM_TEMPERATURE = temperature
+        _TLS[key] = LLMGenerator(cfg)
+    return _TLS[key]
 
 
-def gen_one(item, idx):
+def gen_one(item, idx, model, temperature):
     """生成单条答案，失败重试。返回 (idx, answer, model_used)。"""
     q = (item.get("question") or "").strip()
     ctxs = item.get("contexts") or []
@@ -66,10 +67,10 @@ def gen_one(item, idx):
 
     for attempt in range(1, 4):
         try:
-            g = make_gen()
+            g = make_gen(model, temperature)
             ans = g.generate_with_context(query=q, context=context)
             if ans and ans.strip():
-                return idx, ans.strip(), GEN_MODEL
+                return idx, ans.strip(), model
             return idx, None, None       # 空内容不重试（模型 bug 特征）
         except Exception as e:
             msg = f"{type(e).__name__} {str(e)[:60]}"
@@ -84,16 +85,34 @@ def main():
     ap.add_argument("--n", type=int, default=210)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--temperature", type=float, default=0.2)
+    ap.add_argument("--model", default=GEN_MODEL)
+    ap.add_argument("--out", default=str(OUT))
+    ap.add_argument("--fallback-answers", default=None,
+                    help="生成失败时按 question 沿用该 JSON 中的非空答案，并标注来源")
+    ap.add_argument("--force", action="store_true", help="忽略已有输出，全部重新生成")
     args = ap.parse_args()
+
+    out_path = Path(args.out).resolve()
+
+    fallback_by_question = {}
+    if args.fallback_answers:
+        fallback_path = Path(args.fallback_answers).resolve()
+        fallback_items = json.load(open(fallback_path, encoding="utf-8"))
+        fallback_by_question = {
+            (r.get("question") or "").strip(): r
+            for r in fallback_items
+            if (r.get("question") or "").strip()
+            and (r.get("answer") or "").strip()
+        }
 
     orig = json.load(open(ORIG, encoding="utf-8"))
     items = orig[:args.n]
 
     # 断点续跑：读取已有结果
     done = {}
-    if OUT.exists():
+    if out_path.exists() and not args.force:
         try:
-            prev = json.load(open(OUT, encoding="utf-8"))
+            prev = json.load(open(out_path, encoding="utf-8"))
             for r in prev:
                 if (r.get("answer") or "").strip():
                     done[r.get("question", "")] = r
@@ -103,7 +122,7 @@ def main():
 
     todo = [(i, it) for i, it in enumerate(items)
             if (it.get("question") or "").strip() not in done]
-    print(f"生成器={GEN_MODEL}（裁判=glm-4.7，不同模型）| 待生成 {len(todo)} / {len(items)}")
+    print(f"生成器={args.model} | 待生成 {len(todo)} / {len(items)}")
     sys.stdout.flush()
 
     results = [None] * len(items)
@@ -116,7 +135,10 @@ def main():
     ok = fail = 0
     if todo:
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futs = {ex.submit(gen_one, it, i): i for i, it in todo}
+            futs = {
+                ex.submit(gen_one, it, i, args.model, args.temperature): i
+                for i, it in todo
+            }
             for n, f in enumerate(as_completed(futs), 1):
                 idx, ans, used = f.result()
                 it = items[idx]
@@ -128,6 +150,18 @@ def main():
                     "_gen_model": used,
                     "_grounding": True,
                 }
+                if not ans:
+                    fallback = fallback_by_question.get(
+                        (it.get("question") or "").strip()
+                    )
+                    if fallback:
+                        rec["answer"] = fallback["answer"].strip()
+                        rec["_gen_model"] = fallback.get("_gen_model")
+                        rec["_fallback_answer_source"] = str(
+                            Path(args.fallback_answers).resolve()
+                        )
+                        rec["_gen_error"] = str(used)
+                        ans = rec["answer"]
                 if ans:
                     ok += 1
                 else:
@@ -142,17 +176,17 @@ def main():
 
                 # 每 20 条落盘一次，防止中断丢失
                 if n % 20 == 0:
-                    json.dump(results, open(OUT, "w", encoding="utf-8"),
+                    json.dump(results, open(out_path, "w", encoding="utf-8"),
                               ensure_ascii=False, indent=2)
 
-    json.dump(results, open(OUT, "w", encoding="utf-8"),
+    json.dump(results, open(out_path, "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
 
     empty = sum(1 for r in results if r and not (r.get("answer") or "").strip())
     print("=" * 50)
     print(f"完成 {len(results)} 条 | 成功 {len(results)-empty} | 空/失败 {empty} "
           f"| 用时 {time.time()-t0:.0f}s")
-    print(f"输出: {OUT}")
+    print(f"输出: {out_path}")
 
 
 if __name__ == "__main__":

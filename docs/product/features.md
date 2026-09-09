@@ -44,7 +44,7 @@
 ### Page 8 · Content
 - Type: Content
 - Title: 离线建库
-- Content: 清洗（2570 篇）→ 父子分块（400/2000，20816 块）→ BGE-M3 多向量化 → 入库 Milvus（med_msd_consumer_chunk，混合索引）
+- Content: 清洗（2570 篇）→ 父子分块（400/2000，20816 块）→ BGE-M3 稠密/稀疏双表示 → 入库 Milvus（med_msd_consumer_chunk，混合索引；ColBERT 未启用）
 
 ### Page 9 · Content
 - Type: Content
@@ -54,7 +54,7 @@
 ### Page 10 · Content
 - Type: Content
 - Title: 策略与重排
-- Content: 四策略 direct/hyde/subquery/backtracking（LLM 自动选）；BGE-reranker 交叉编码精排 Top-2 父块；dense 1.0 + sparse 0.7 加权混合检索提升召回
+- Content: 四策略 direct/hyde/subquery/backtracking（LLM 自动选）；BGE-reranker 对最佳命中子块证据打分并返回 Top-2 完整父块；dense 1.0 + sparse 0.7 加权混合检索
 
 ### Page 11 · Transition
 - Type: Transition
@@ -79,7 +79,7 @@
 ### Page 15 · Content
 - Type: Content
 - Title: 工程成果
-- Content: 端到端打通（API 8005 + 前端 8501）；修复 Windows VC++ 运行时崩溃（自包含 8 DLL）；修复 FAQ 误答；Milvus/Redis(1234)/MySQL 已验证；关键数字 2570/20816/BGE-M3/六步
+- Content: 端到端服务入口为 API 8005 + Streamlit 8501；修复 Windows 原生运行时问题与 FAQ 误答；本次文档审查未启动 Milvus/Redis/MySQL，不将依赖状态表述为当前已验证
 
 ### Page 16 · Content
 - Type: Content

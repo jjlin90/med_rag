@@ -340,6 +340,10 @@ class Retrieval:
                 parent_map[pid] = {
                     'id': pid,
                     'content': child.get('parent_content') or child.get('content', ''),
+                    # 用命中的细粒度子块做 CrossEncoder 重排，避免约 2000 字父块
+                    # 在有限 token 窗口里被截断或被无关内容稀释；content 仍保留
+                    # 完整父块供最终生成使用。
+                    'rerank_content': child.get('content', ''),
                     'metadata': child.get('metadata', {}),
                     'score': child.get('score', 0),
                     'source': child.get('source', 'unknown'),
@@ -350,6 +354,7 @@ class Retrieval:
                 existing = parent_map[pid]
                 if child.get('score', 0) > existing['score']:
                     existing['score'] = child.get('score', 0)
+                    existing['rerank_content'] = child.get('content', '')
                 existing['children_ids'].append(child.get('id'))
 
         deduped_parents = list(parent_map.values())

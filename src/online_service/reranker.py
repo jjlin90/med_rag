@@ -74,7 +74,12 @@ class Reranker:
 
         try:
             # 准备输入对：(query, doc) 二元组列表
-            pairs = [(query, doc['content']) for doc in documents]
+            # Small-to-Big 正常路径用子块判断相关性、父块作为生成上下文。
+            # 未携带 rerank_content 的普通检索与 L1 路径仍使用 content。
+            pairs = [
+                (query, doc.get('rerank_content') or doc['content'])
+                for doc in documents
+            ]
 
             # 计算分数 (FlagReranker 使用 compute_score)
             scores = self.model.compute_score(pairs)
@@ -171,7 +176,7 @@ class Reranker:
             # 准备输入对
             pairs = []
             for doc in documents:
-                pairs.append((query, doc['content']))
+                pairs.append((query, doc.get('rerank_content') or doc['content']))
 
             # 计算分数
             scores = self.model.compute_score(pairs)
@@ -207,7 +212,10 @@ class Reranker:
             return [doc.get('score', 0) for doc in documents]
 
         try:
-            pairs = [(query, doc['content']) for doc in documents]
+            pairs = [
+                (query, doc.get('rerank_content') or doc['content'])
+                for doc in documents
+            ]
             scores = self.model.compute_score(pairs)
             return [float(score) for score in scores]
 

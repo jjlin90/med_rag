@@ -1,6 +1,6 @@
 # Small-to-Big 子块过滤缺陷修复报告
 
-> 修复日期：2026-08-29 · 已在真实数据（20816 条）上端到端验证
+> 首次修复日期：2026-08-29；2026-09-09 文档复核：代码修复仍在，但本次 Milvus 未运行，未重新验证线上 collection
 
 ---
 
@@ -65,8 +65,7 @@ def child_filter_expr(self) -> str:
 `parent_id != ""`——**这与 `chunk_type == 'child'` 语义完全等价**，因为 `batch_process()`
 已经把父块的 `parent_id` 归一为空字符串。
 
-**这意味着现有 20816 条数据一条都不用动，过滤立即生效。**
-只有当下次重建集合重新入库时，才会自动获得显式的 `chunk_type` 字段，届时代码自动切换过去。
+对旧 schema，`parent_id != ""` 可以直接过滤逻辑子块；但现存 `docs.json` 的顶层 `chunk_type` 全为 `child`，若新建带显式字段的 collection 并复用该文件，会误标逻辑父块。因此**新 schema 入库前必须重新生成分块文件**。
 
 ### 移除静默降级
 
@@ -153,9 +152,9 @@ python scripts/check_chunk_type_filter.py --with-search --query "一型糖尿病
 
 ## 六、后续建议
 
-1. **不必重建集合**——旧库的 `parent_id != ""` 退化方案语义等价且已验证。
-2. 若将来因其他原因重建集合，新库会自动获得显式 `chunk_type` 字段，代码自动切换，无需改配置。
-3. 目前子块召回 16 → 去重后通常只剩 3-5 个父块，精排取 Top-2。
+1. 旧 schema 可继续使用 `parent_id != ""`，但部署前要运行诊断脚本确认实际 collection 字段。
+2. 若重建为新 schema，先重新运行分块与向量化流程，不能直接复用当前顶层 `chunk_type` 错误的 JSON。
+3. 当前链路是子块召回 16 → 取前 5 个子块 → 回溯父块；reranker 对最佳命中子块证据打分，最终返回 Top-2 完整父块。
    若希望精排有更大选择空间，可调大 `TOP_K_RETRIEVE`；若想降低延迟，16 已足够。
 4. 建议把 `python scripts/check_chunk_type_filter.py` 加入CI 或部署前检查。
 
@@ -174,8 +173,8 @@ python scripts/check_chunk_type_filter.py --with-search --query "一型糖尿病
 
 我的修复是把过滤**下推到 Milvus**：给 schema 加了顶层 `chunk_type` 字段
 （JSON 内部的 key 是没法下推过滤的），检索时直接 `chunk_type == 'child'`。
-同时兼容旧库——探测到没有这个字段就退化成 `parent_id != ""`，语义等价，
-所以线上两万条数据不用重建就生效了。
+同时兼容旧 schema——探测到没有该字段就使用 `parent_id != ""`。但若重建为带
+显式 `chunk_type` 的新 schema，必须先重新生成当前顶层字段错误的分块 JSON。
 
 另外我把那条静默降级删了，改成记录 ERROR。医疗场景里，
 静默返回 2000 字大块既污染上下文又掩盖数据问题，失败应该显式暴露。

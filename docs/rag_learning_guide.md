@@ -100,7 +100,7 @@ answer = llm(f"根据资料回答：{context}\n问题：{question}")  # 7. 生�
 | 会话存储 | **MySQL（PyMySQL）** | 按 session_id 存最近 5 轮对话（端口 3306） |
 | 缓存 / FAQ | **Redis + MySQL + jieba BM25** | 高频问题直答，Redis 未启动自动降级（端口 6379） |
 | RAG 评估 | **Ragas 0.2.x** | 跑 faithfulness / answer_relevancy / context_precision / context_recall |
-| 生成模型 | **OpenAI 兼容接口**（如阿里云 DashScope 通义千问） | 最终答案生成 |
+| 生成模型 | **OpenAI 兼容接口**（模型由环境变量配置） | 最终答案生成 |
 | 依赖管理 | **uv** + pyproject.toml | 虚拟环境与依赖锁定 |
 
 ### 2.3 目录结构导览（带"它是干嘛的"）
@@ -140,7 +140,7 @@ med_rag/
 ├── web_demo/                     # Streamlit 前端（端口 8501）
 └── data/                         # 数据（git 已屏蔽）
     ├── clean_md/                 #   清洗后 Markdown（约 2570 篇）
-    ├── split_docs/docs.json      #   分块结果（约 20816 块）
+    ├── split_docs/docs.json      #   分块结果（20816 块；现存文件需按 parent_id 判父子）
     └── test_query/               #   测试/评估数据
 ```
 
@@ -212,7 +212,7 @@ med_rag/
 - dense 索引：`IVF_FLAT`，`nlist=256`，`metric_type=IP`（内积）。
 - sparse 索引：`SPARSE_INVERTED_INDEX`，`drop_ratio_build=0.2`。
 - 混合检索：`MilvusClient.hybrid_search` 对两路分别 ANN 检索，再用 `WeightedRanker` 按 `SPARSE_WEIGHT=0.7 / DENSE_WEIGHT=1.0` 加权融合、去重。
-- **检索过滤下推**：检索时带 `chunk_type == "child"` 下推到 Milvus 侧，父块不参与召回。旧库没有该字段时自动降级为 `parent_id != ""`（语义等价，**20816 条存量数据无需重建**）。详见 `docs/diagrams/Small-to-Big缺陷修复报告.md`。
+- **检索过滤下推**：新 schema 使用 `chunk_type == "child"`；旧 schema 无该列时使用 `parent_id != ""`。注意现存 `docs.json` 是修复前产物，顶层 `chunk_type` 全为 `child`，只能按 `parent_id` 判断逻辑父子；若用新 schema 重新入库，应先重生成分块文件。当前审查时 Milvus 未运行，线上 collection 需用诊断脚本验证。
 
 ---
 
@@ -309,14 +309,14 @@ parents  = dedup_by_parent_id(children)                                         
 
 ### 4.4 第四步：重排序（reranker.py，BGE-reranker）
 
-粗排得到的候选父块里可能有噪声，用 **BGE-reranker-large（交叉编码 CrossEncoder）** 精排：
+粗排得到的候选父块里可能有噪声。系统保留每个父块的最佳命中子块为 `rerank_content`，用 **BGE-reranker-large（交叉编码 CrossEncoder）** 对该子块证据打分：
 
 ```python
 reranked_results = self.reranker.rerank(query, retrieval_results, top_k=self.config.TOP_K_RERANK)
 ```
 
 - 把 `(query, 候选文档)` 成对送入模型做**交互式编码**，相关性判断更准。
-- 按分数排序，取 **Top-2 父块**（`TOP_K_RERANK=2`）喂给 LLM。
+- 按子块证据分数排序，但返回对应的**完整父块**；取 Top-2（`TOP_K_RERANK=2`）喂给 LLM。
 - 模型不可用时**优雅降级**：按原顺序返回前 2 条，不阻塞主流程。
 - 注意：重排内部会调用 `documents.sort()` 原地排序，因此**传入的必须是普通 list**（`RetrievalResult.documents`），
   不能直接把 `RetrievalResult` 包装对象传进去。
@@ -376,7 +376,7 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
           ③ Small-to-Big 检索：混合检索(过滤下推只召回子块) Top-16
                               → Top-5 子块 → parent_id 回溯父块去重
                               ↓
-          ④ 重排序(BGE-reranker CrossEncoder，Top-2 父块)
+          ④ 重排序(BGE-reranker 对最佳命中子块打分，返回 Top-2 父块)
                               ↓
           ⑤ 构建上下文(父块正文 + 编号，水位为 L0/L1/L2)
                               ↓
@@ -433,8 +433,8 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 
 - **本质矛盾**：检索要"小"（精准），理解要"大"（完整）。
 - **解法**：检索用子块，生成用父块。本项目子块 400 / 父块 2000，重叠 60。
-- **Small-to-Big 检索链路**：Top-16 粗排 → Top-5 子块 → `parent_id` 回溯父块去重 → 精排 Top-2 父块。
-- **实测构成**：20816 块 = **16880 子块 + 3936 父块**（父块占 18.9%）。
+- **Small-to-Big 检索链路**：Top-16 粗排 → Top-5 子块 → `parent_id` 回溯父块去重 → 最佳命中子块证据精排 → 返回 Top-2 完整父块。
+- **数据构成**：现存 `docs.json` 共 20816 块；按 `parent_id` 统计为 **16880 逻辑子块 + 3936 逻辑父块**（父块占 18.9%）。
   早期版本里这些父块也参与召回，且过滤发生在 Python 侧——结果 Top-16 里平均 4 条是父块（**浪费 25% 槽位**），
   现在过滤已下推到 Milvus。
 - **你实验时可以调**：把 `CHILD_CHUNK_SIZE` 调大/调小，观察召回质量和答案完整度的变化。
@@ -458,7 +458,7 @@ context = "【知识来源1】\n...父块正文...\n【知识来源2】\n..."
 | 结构 | query 和 doc **各自独立编码**成向量 | query 和 doc **拼在一起**联合编码 |
 | 速度 | 快（doc 向量可离线预计算，查询只算一次） | 慢（每对都要现场算） |
 | 精度 | 中（两塔不交互，语义交互弱） | 高（联合建模，相关性判断准） |
-| 本项目用途 | **粗排**：从 16880 个子块里快速召回 16 条（Top-5 子块 → 回溯父块） | **精排**：对候选父块重新打分取 Top-2 |
+| 本项目用途 | **粗排**：从逻辑子块中快速召回 16 条（Top-5 子块 → 回溯父块） | **精排**：对候选父块的最佳命中子块证据打分，返回 Top-2 父块 |
 
 > 结论：**粗排用双塔（快），精排用交叉编码（准）**。两步结合，既快又准——这就是工业级 RAG 的标准做法。
 
@@ -496,6 +496,8 @@ RAG 不是"跑通就能用"，需要量化指标看效果。本项目用 Ragas�
 
 代码：`src/online_service/rag_evaluator.py`，脚本：`scripts/evaluate_rag.py`。
 
+当前留档的最新完整结果为：210/210；Faithfulness 0.8163、Answer Relevancy 0.5007、Context Precision 0.8405、Context Recall 0.7619、加权综合 0.7299。主裁判为 GLM-4.6V，少量 API 失败指标由 deepseek-v4-flash 仅补缺；因此它是完整运行报告，但不是纯单裁判报告。严格 A/B 应使用同一独立裁判全量配对复评。
+
 Ragas 用 4 个 0~1 的指标评估 RAG 输出：
 
 | 指标 | 含义 | 依赖 |
@@ -505,7 +507,7 @@ Ragas 用 4 个 0~1 的指标评估 RAG 输出：
 | **context_precision（上下文精确度）** | 检索到的上下文是否聚焦、无噪声 | 问题 + 上下文 |
 | **context_recall（上下文召回率）** | 上下文是否覆盖回答所需的关键信息 | 问题 + 上下文 + **标准答案(ground_truth)** |
 
-- **LLM 接入**：Ragas 的 LLM 复用项目 DashScope 接口（`ChatOpenAI` + `LangchainLLMWrapper`）。
+- **LLM 接入**：Ragas 通过 OpenAI 兼容接口接入 judge（`ChatOpenAI` + `LangchainLLMWrapper`），模型名和地址由环境变量配置。
 - **Embedding 接入**：复用本地 BGE-M3（保证与检索同分布、无需额外密钥）。
 - **降级**：Ragas 依赖缺失或 BGE 不可用时，自动回退到内置 **LLM-as-judge**（faithfulness/context_precision/answer_relevancy 三项）。
 
@@ -607,7 +609,7 @@ DEGRADE_ALERT_LEVEL          = 1      # 降级水位告警阈值（0=不打点 1
 # 模型
 EMBED_MODEL_NAME = "BGE-M3"        # 1024 维
 RERANK_MODEL_NAME = "BGE-reranker-large"
-LLM_MODEL_NAME = "qwen-turbo"      # DashScope 通义千问
+LLM_MODEL_NAME = "<兼容模型名>"     # 通过 .env 配置，例如 deepseek-v4-flash
 LLM_TEMPERATURE = 0.2              # 低温度，严谨
 
 # 端口约定

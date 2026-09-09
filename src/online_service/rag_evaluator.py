@@ -107,16 +107,49 @@ class RAGEvaluator:
             logger.warning("LLM_JUDGE_TEMPERATURE 不是合法数字，回退为 0.0")
             temperature = 0.0
 
+        judge_timeout = float(os.getenv("LLM_JUDGE_TIMEOUT", "180"))
+        judge_max_tokens = int(os.getenv("LLM_JUDGE_MAX_TOKENS", "2048"))
+        judge_max_retries = int(os.getenv("LLM_JUDGE_MAX_RETRIES", "2"))
+        disable_thinking = os.getenv(
+            "LLM_JUDGE_DISABLE_THINKING", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
+        # GLM-4.5-Air 默认可能启用深度思考。Ragas 的 Faithfulness 提示较长，
+        # 开启思考时会大量消耗推理 token，甚至到达 max_tokens 仍未输出 JSON。
+        # 智谱的 OpenAI 兼容接口通过 extra_body.thinking 显式关闭该模式。
+        extra_body = (
+            {"thinking": {"type": "disabled"}} if disable_thinking else None
+        )
+        force_json_mode = os.getenv(
+            "LLM_JUDGE_JSON_MODE", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        model_kwargs = (
+            {"response_format": {"type": "json_object"}}
+            if force_json_mode
+            else {}
+        )
+
         llm = ChatOpenAI(
             model=self.config.LLM_MODEL_NAME,
             openai_api_key=self.config.LLM_API_KEY,
             base_url=self.config.LLM_BASE_URL,
             temperature=temperature,
-            timeout=60,
-            max_retries=5,
+            max_tokens=judge_max_tokens,
+            timeout=judge_timeout,
+            max_retries=judge_max_retries,
             rate_limiter=rate_limiter,
+            extra_body=extra_body,
+            model_kwargs=model_kwargs,
         )
-        return LangchainLLMWrapper(llm)
+        class _FixedTemperatureWrapper(LangchainLLMWrapper):
+            """Keep providers with strict sampling validation compatible with Ragas."""
+
+            def get_temperature(self, n: int) -> float:
+                # Ragas normally substitutes 1e-8 for n=1. GLM-4.6V rejects
+                # that value because its API accepts at most two decimals.
+                return temperature
+
+        return _FixedTemperatureWrapper(llm)
 
     def _build_embeddings(self):
         from ragas.evaluation import LangchainEmbeddingsWrapper
@@ -164,6 +197,7 @@ class RAGEvaluator:
         from ragas import evaluate
         from ragas.metrics import (Faithfulness, AnswerRelevancy,
                                    ContextPrecision, ContextRecall)
+        from ragas.run_config import RunConfig
         from datasets import Dataset
 
         # ground_truth 缺失时，依赖它的两项上下文指标无法计算，仅跑 LLM 类两项
@@ -189,6 +223,13 @@ class RAGEvaluator:
             metrics=metrics,
             llm=llm,
             embeddings=embeddings,
+            run_config=RunConfig(
+                timeout=int(os.getenv("LLM_JUDGE_TIMEOUT", "180")),
+                max_retries=int(os.getenv("LLM_JUDGE_MAX_RETRIES", "2")),
+                max_wait=30,
+                max_workers=8,
+                seed=42,
+            ),
             show_progress=show_progress,
             raise_exceptions=False,
         )
@@ -203,14 +244,26 @@ class RAGEvaluator:
             row = {"question": it["question"]}
             for k in metric_keys:
                 v = rows[i].get(k) if i < len(rows) else None
-                row[k] = round(float(v), 4) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+                # Ragas 的 API/解析失败通常表现为 NaN。保留为 null，不能把
+                # “没评出来”伪装成质量 0 分并拖低均值。
+                row[k] = (round(float(v), 4)
+                          if isinstance(v, (int, float)) and math.isfinite(v)
+                          else None)
             scores.append(row)
 
         avg = {}
+        valid_counts = {}
         for k in metric_keys:
             vals = [r[k] for r in scores
-                    if isinstance(r[k], (int, float)) and math.isfinite(r[k])]
+                     if isinstance(r[k], (int, float)) and math.isfinite(r[k])]
+            valid_counts[k] = len(vals)
             avg[k] = round(sum(vals) / len(vals), 4) if vals else 0.0
+
+        complete_count = sum(
+            1 for r in scores
+            if all(isinstance(r[k], (int, float)) and math.isfinite(r[k])
+                   for k in metric_keys)
+        )
 
         return {
             "engine": "ragas",
@@ -218,6 +271,8 @@ class RAGEvaluator:
             "metrics": metric_keys,
             "has_ground_truth": has_gt,
             "average": avg,
+            "valid_counts": valid_counts,
+            "complete_count": complete_count,
             "scores": scores,
         }
 
