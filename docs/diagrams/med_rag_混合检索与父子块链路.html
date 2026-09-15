@@ -1,179 +1,69 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>med_rag 混合检索与父子块链路</title>
-<style>
-  * { box-sizing: border-box; }
-  body { margin:0; padding:32px 24px 64px; background:#14141A; color:#D3D1C7;
-    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
-  .wrap { max-width:900px; margin:0 auto; }
-  h1 { font-size:20px; font-weight:500; margin:0 0 6px; color:#F1EFE8; }
-  .sub { font-size:13px; color:#8E8E88; margin:0 0 24px; line-height:1.7; }
-  svg { display:block; width:100%; height:auto; }
-  .legend { margin-top:28px; display:flex; flex-wrap:wrap; gap:10px 22px; font-size:12px; color:#8E8E88; }
-  .legend span { display:inline-flex; align-items:center; gap:7px; }
-  .dot { width:11px; height:11px; border-radius:3px; display:inline-block; }
-  table { border-collapse:collapse; margin-top:26px; width:100%; font-size:13px; }
-  th,td { border:1px solid rgba(255,255,255,.14); padding:8px 12px; text-align:left; vertical-align:top; }
-  th { color:#9FE1CB; font-weight:500; background:rgba(255,255,255,.03); }
-  td code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:#FAC775; }
-  h2 { font-size:15px; font-weight:500; margin:34px 0 10px; color:#F1EFE8; }
-  ul { font-size:13px; line-height:1.8; color:#B4B2A9; padding-left:20px; }
-  .q { border-left:3px solid #EF9F27; padding:2px 0 2px 14px; margin:14px 0; color:#D3D1C7; font-size:13px; line-height:1.8; }
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>med_rag 混合检索与父子块链路（Small-to-Big）</h1>
-<p class="sub">BGE-M3 一次编码产双向量 → Milvus 两路并行召回 → WeightedRanker 加权融合 → <strong style="color:#9FE1CB">子块定位、父块作答</strong> → CrossEncoder 精排 Top-2 → 送 LLM。</p>
-
-<svg viewBox="0 0 680 986" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
-<title>med_rag 混合检索与父子块链路</title>
-<desc>用户 Query 经 BGE-M3 一次前向同时产出 dense 与 sparse 两种向量，在 Milvus 中并行走 HNSW 语义召回与倒排索引关键词召回，由 WeightedRanker 归一化加权融合；随后过滤出 Top-5 子块，经 parent_id 回溯父块并去重，再由 BGE-reranker CrossEncoder 精排出 Top-2 父块，拼接为 LLM 上下文。底部展示离线建库阶段父块 2000 字切分为多个 400 字子块的关系。</desc>
-<defs>
-  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-    <path d="M2 1L8 5L2 9" fill="none" stroke="#8E8E88" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-  </marker>
-</defs>
-
-<rect x="250" y="24" width="180" height="44" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
-<text x="340" y="46" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">用户 Query</text>
-
-<path d="M340 68 L340 86" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-
-<rect x="175" y="88" width="330" height="56" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
-<text x="340" y="110" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">BGE-M3 单次前向编码</text>
-<text x="340" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#AFA9EC">一次调用同时产出 dense + sparse</text>
-
-<path d="M340 144 L340 162" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
-<path d="M180 162 L500 162" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
-<path d="M180 162 L180 180" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M500 162 L500 180" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="155" font-size="12" fill="#8E8E88">两路并行召回</text>
-
-<rect x="60" y="182" width="240" height="68" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="180" y="204" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">Dense 路 · 语义召回</text>
-<text x="180" y="223" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">1024 维稠密向量 · HNSW 索引</text>
-<text x="180" y="242" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">懂同义改写，怕生僻专有名词</text>
-
-<rect x="380" y="182" width="240" height="68" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="500" y="204" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">Sparse 路 · 关键词召回</text>
-<text x="500" y="223" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">学习式词权 · 倒排索引</text>
-<text x="500" y="242" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">锁专有名词，怕同义改写</text>
-
-<path d="M180 250 L180 268" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
-<path d="M500 250 L500 268" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
-<path d="M180 268 L500 268" fill="none" stroke="#8E8E88" stroke-width="1.5"/>
-<path d="M340 268 L340 284" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-
-<rect x="190" y="286" width="300" height="60" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="340" y="308" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">WeightedRanker 加权融合</text>
-<text x="340" y="328" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">先归一化再加权：dense 1.0 · sparse 0.7</text>
-
-<path d="M340 346 L340 364" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="358" font-size="12" fill="#8E8E88">粗排候选</text>
-
-<rect x="190" y="366" width="300" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="340" y="388" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">Top-16 粗排候选</text>
-<text x="340" y="406" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">多召回一些，给精排留余地</text>
-
-<path d="M340 422 L340 440" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="434" font-size="12" fill="#8E8E88">过滤子块</text>
-
-<rect x="190" y="442" width="300" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="340" y="464" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">过滤出 Top-5 子块</text>
-<text x="340" y="482" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">chunk_type = child（约 400 字）</text>
-
-<path d="M340 498 L340 516" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="510" font-size="12" fill="#8E8E88">Small-to-Big</text>
-
-<rect x="190" y="518" width="300" height="60" rx="8" fill="#633806" stroke="#EF9F27" stroke-width="0.5"/>
-<text x="340" y="540" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#FAC775">parent_id 回溯父块</text>
-<text x="340" y="560" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#EF9F27">小块定位精度高 · 大块作答上下文全</text>
-
-<path d="M340 578 L340 596" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="590" font-size="12" fill="#8E8E88">父块去重</text>
-
-<rect x="190" y="598" width="300" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="340" y="620" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">父块去重合并</text>
-<text x="340" y="638" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">多个子块指向同一父块时只保留一次</text>
-
-<path d="M340 654 L340 672" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="666" font-size="12" fill="#8E8E88">精排输入</text>
-
-<rect x="190" y="674" width="300" height="60" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="340" y="696" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#B5D4F4">BGE-reranker 精排</text>
-<text x="340" y="716" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">CrossEncoder 全交互打分，非双塔</text>
-
-<path d="M340 734 L340 752" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="350" y="746" font-size="12" fill="#8E8E88">Top-2 输出</text>
-
-<rect x="190" y="754" width="300" height="56" rx="8" fill="#085041" stroke="#5DCAA5" stroke-width="0.5"/>
-<text x="340" y="776" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#9FE1CB">Top-2 父块 → LLM</text>
-<text x="340" y="794" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5DCAA5">拼成【知识来源1/2】后送通义千问</text>
-
-<rect x="50" y="842" width="580" height="124" rx="16" fill="#1F1F24" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="0.5"/>
-<text x="340" y="866" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#D3D1C7">离线建库：父块 → 子块切分</text>
-<text x="340" y="886" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#8E8E88">PARENT_CHUNK_SIZE = 2000 · CHILD = 400 · CHUNK_OVERLAP = 60</text>
-
-<rect x="70" y="902" width="180" height="48" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
-<text x="160" y="922" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#CECBF6">父块 parent</text>
-<text x="160" y="940" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#AFA9EC">≤ 2000 字 · 用于作答</text>
-
-<path d="M250 926 L306 926" fill="none" stroke="#8E8E88" stroke-width="1.5" marker-end="url(#arrow)"/>
-
-<rect x="310" y="902" width="100" height="48" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="360" y="922" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#B5D4F4">子块 child</text>
-<text x="360" y="940" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">约 400 字</text>
-
-<rect x="418" y="902" width="100" height="48" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="468" y="922" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#B5D4F4">子块 child</text>
-<text x="468" y="940" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">约 400 字</text>
-
-<rect x="526" y="902" width="100" height="48" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
-<text x="576" y="922" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#B5D4F4">子块 child</text>
-<text x="576" y="940" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#85B7EB">约 400 字</text>
-</svg>
-
-<div class="legend">
-  <span><i class="dot" style="background:#3C3489;border:1px solid #AFA9EC"></i>编码 / 父块</span>
-  <span><i class="dot" style="background:#0C447C;border:1px solid #85B7EB"></i>检索 / 子块</span>
-  <span><i class="dot" style="background:#633806;border:1px solid #EF9F27"></i>Small-to-Big 关键步</span>
-  <span><i class="dot" style="background:#085041;border:1px solid #5DCAA5"></i>精排输出</span>
-</div>
-
-<h2>三个最容易被追问的技术点</h2>
-<div class="q">
-<strong>Q：为什么 sparse 用 BGE-M3 自带的稀疏向量，而不是传统 BM25？</strong><br>
-BM25 是<strong>统计式词权</strong>——只看词频和逆文档频率，不理解语义，也无法处理"未登录词"。BGE-M3 的 sparse 是<strong>模型学习出来的词权</strong>，能识别一句话里哪些token真正重要。典型场景："1型糖尿病"和"2型糖尿病"字面高度重合、语义完全相反，纯 dense 容易把它们拉到一起，靠 sparse 把 "1型"/"2型" 的权重顶起来才能分开。
-</div>
-<div class="q">
-<strong>Q：WeightedRanker 和 RRF 的区别？0.7 / 1.0 是拍脑袋吗？</strong><br>
-RRF 只利用<strong>排名</strong>，丢掉了分数强度信息；WeightedRanker 是<strong>先把两路分数各自归一化，再按权重加权</strong>，量纲问题由 Milvus 内部处理，所以不需要自己写 min-max。0.7 / 1.0 是<strong>对齐 EduRag 的初始值、按医疗语料人工调过的</strong>，不是理论最优——诚实的说法是"在自建 200 条医疗 QA 上做过网格搜索粗调，dense 主导、sparse 补充"，如果面试官追问 A/B 数据，就承认没做严格显著性检验。
-</div>
-<div class="q">
-<strong>Q：为什么必须两阶段（双塔召回 + CrossEncoder 精排）？</strong><br>
-<strong>双塔</strong>把 query 和 doc 分别编码成向量，doc 向量可<strong>离线预计算</strong>，检索时只做一次向量近邻搜索，能扫全库 2 万条；代价是 query 和 doc 之间<strong>没有任何交互</strong>，精度有限。<br>
-<strong>CrossEncoder</strong> 把 query 和 doc 拼成一个序列送进 Transformer 做<strong>全交互</strong>，精度高得多；代价是<strong>必须在线计算，无法预编码</strong>——对 2 万条全算一次要几分钟，不可能用于召回。所以只能"召回放宽到 16 条，精排收到 2 条"。<strong>这是工业界标准范式，不是设计缺陷。</strong>
-</div>
-
-<h2>面试会追问的坑（含已修复项）</h2>
-<ul>
-<li><strong>🟢 父块是不是也进向量库了？会不会被检索到？</strong> 在库里，但<strong>检索不到</strong>。库里 20816 条 = 子块 16880 + 父块 3936（父块占 18.9%）。<br>
-最初子块过滤在应用层后置，父块会先占用 Top-K 名额再被丢弃，<strong>实测槽位浪费率 25%</strong>；且原代码有条"挑不出子块就返回父块"的降级分支，会让 Small-to-Big 静默失效。<br>
-<strong>修法</strong>：把过滤下推到 Milvus。关键点——<strong>Milvus 只能对顶层标量字段下推 <code>expr</code> 过滤，JSON 内部的 key 用不了</strong>，所以给 schema 加了顶层 <code>chunk_type</code> 字段。旧库无该字段时自动退化为 <code>parent_id != ""</code>（语义等价），<strong>因此两万条数据不用重建</strong>。同时删除了静默降级分支，改为记录 ERROR。</li>
-<li><strong>父块 2000 字会不会稀释向量语义？</strong> 会。这正是 Small-to-Big 要解决的问题：用 400 字子块做检索（语义聚焦），回溯 2000 字父块做生成（上下文完整）。</li>
-<li><strong>召回算的是子块分，精排算的是父块分，这不是两批文档吗？</strong> 是的，这正是 Small-to-Big 的精髓——中间换过一次粒度。子块分高说明"这个位置相关"，父块提供"这个位置周围的完整论述"。父块分数由其最高分子块继承。</li>
-<li><strong>Top-2 父块 = 最多 4000 字，会不会超上下文？</strong> 约 4000 字符对通义千问的上下文窗口没有压力，但 token 成本翻倍，且稀释注意力。这是"上下文完整"和"信噪比"之间的取舍。</li>
-<li><strong>🟢 检索不到的时候怎么办？会降级返回 2000 字父块吗？</strong> <strong>不会</strong>，这条路径已被<strong>永久禁止、没有开关</strong>。<br>
-删掉静默降级后，链路演进为 <strong>L0 / L1 / L2 分层降级</strong>，原则是「<strong>降级路径必须比主路径更安全，而不是更粗糙</strong>」：<br>
-<strong>L0</strong> 下推过滤只召回子块，orphan 父块记 ERROR 剔除（400 字子块 → 2000 字父块）；<br>
-<strong>L1</strong> 子块召回为空时放开过滤重查，命中父块后<strong>现场切成 400 字子块</strong>——换的是检索入口，<strong>输出粒度不退化</strong>，下游无需写特例；<br>
-<strong>L2</strong> 仍为空或基础设施故障时<strong>安全拒答、不调用 LLM</strong>（医疗场景里无依据硬答是最高风险行为），且故障导致的降级<strong>不写缓存</strong>，避免空结果污染故障恢复后的请求。<br>
-回归测试：<code>python scripts/test_degrade_policy.py</code>（9 项 mock 场景全通过）。</li>
-</ul>
-</div>
-</body>
-</html>
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>med_rag_混合检索与父子块链路</title><style>body{margin:0;background:#f3f6fa;font-family:Microsoft YaHei,sans-serif}main{max-width:1600px;margin:auto;padding:16px}svg{width:100%;height:auto}p{line-height:1.7}</style><main><p>按代码配置绘制，已删除HNSW、200题网格搜索、最优权重等无依据表述。 <a href="../med_rag_学习与面试全解.md">完整代码核查与边界</a></p><svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1970" viewBox="0 0 1600 1970"><rect width="100%" height="100%" fill="#f3f6fa"/>
+<text x="60" y="78" font-family="Microsoft YaHei,sans-serif" font-size="38" font-weight="700" fill="#172f47">混合检索与父子块：每次检索的正常L0链路</text>
+<text x="60" y="117" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#52647a">2026-09-15校订｜两路检索融合不是Cross-Encoder精排；子块打分与父正文生成分开</text>
+<rect x="300" y="160" width="1000" height="105" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
+<text x="322" y="199" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">查询文本 → BGE-M3 encode</text>
+<text x="322" y="231" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">dense 1024维 + sparse lexical weights；ColBERT关闭</text>
+<path d="M620 265 L420 325" stroke="#54748e" stroke-width="3"/>
+<polygon points="420.0,325.0 429.1,315.8 432.7,327.7" fill="#54748e"/>
+<path d="M980 265 L1180 325" stroke="#54748e" stroke-width="3"/>
+<polygon points="1180.0,325.0 1167.3,327.7 1170.9,315.8" fill="#54748e"/>
+<rect x="60" y="325" width="700" height="165" rx="15" fill="#e8eef6" stroke="#b4c5d7" stroke-width="2"/>
+<text x="82" y="364" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">dense：IVF_FLAT / IP</text>
+<text x="82" y="396" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">nlist=256；nprobe=16；最多16候选</text>
+<text x="82" y="423" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">两路均下推source条件与子块过滤</text>
+<text x="82" y="450" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">近似检索，不是HNSW</text>
+<rect x="840" y="325" width="700" height="165" rx="15" fill="#e8eef6" stroke="#b4c5d7" stroke-width="2"/>
+<text x="862" y="364" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">sparse：SPARSE_INVERTED_INDEX / IP</text>
+<text x="862" y="396" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">drop_ratio_search=0.2；最多16候选</text>
+<text x="862" y="423" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">BGE词权稀疏向量，不是FAQ的BM25</text>
+<text x="862" y="450" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">drop_ratio_build=0.2</text>
+<path d="M420 490 L650 550" stroke="#54748e" stroke-width="3"/>
+<polygon points="650.0,550.0 637.4,553.2 640.5,541.1" fill="#54748e"/>
+<path d="M1180 490 L950 550" stroke="#54748e" stroke-width="3"/>
+<polygon points="950.0,550.0 959.5,541.1 962.6,553.2" fill="#54748e"/>
+<rect x="300" y="550" width="1000" height="115" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
+<text x="322" y="589" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">WeightedRanker(dense=1.0, sparse=0.7)</text>
+<text x="322" y="621" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">融合结果最多16条；不是16+16=32条最终候选</text>
+<text x="322" y="648" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">SDK调用负责融合；无本项目网格搜索最优性证据</text>
+<path d="M800 665 L800 710" stroke="#54748e" stroke-width="3"/>
+<polygon points="800.0,710.0 793.8,698.6 806.2,698.6" fill="#54748e"/>
+<rect x="300" y="710" width="1000" height="135" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
+<text x="322" y="749" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">子块校验 → 取前5有效子块</text>
+<text x="322" y="781" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">新schema：chunk_type=child；旧schema：parent_id非空</text>
+<text x="322" y="808" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">缺parent_id会剔除并打点；存量父块误标child仍可能抢位</text>
+<text x="322" y="835" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">16→5是每次调用上限，subquery每个问题分别执行</text>
+<path d="M800 845 L800 890" stroke="#54748e" stroke-width="3"/>
+<polygon points="800.0,890.0 793.8,878.6 806.2,878.6" fill="#54748e"/>
+<rect x="300" y="890" width="1000" height="140" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
+<text x="322" y="929" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">按parent_id聚合 / 去重（最多5条父记录）</text>
+<text x="322" y="961" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">content：优先冗余parent_content，缺失用子正文</text>
+<text x="322" y="988" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">rerank_content：该父块最高融合分命中子块</text>
+<text x="322" y="1015" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">通常不二次查父块；不等于把整个疾病章节或原文件取回</text>
+<path d="M800 1030 L800 1075" stroke="#54748e" stroke-width="3"/>
+<polygon points="800.0,1075.0 793.8,1063.6 806.2,1063.6" fill="#54748e"/>
+<rect x="300" y="1075" width="1000" height="145" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
+<text x="322" y="1114" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">原用户问题 × rerank_content → Cross-Encoder</text>
+<text x="322" y="1146" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">BGE-reranker-large，重排后最多取2条</text>
+<text x="322" y="1173" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">不是先把全部子块精排再回溯；每父记录使用一条代表证据</text>
+<text x="322" y="1200" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">subquery先合并去重，再统一用原问题重排</text>
+<path d="M800 1220 L800 1265" stroke="#54748e" stroke-width="3"/>
+<polygon points="800.0,1265.0 793.8,1253.6 806.2,1253.6" fill="#54748e"/>
+<rect x="300" y="1265" width="1000" height="110" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
+<text x="322" y="1304" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">最多2条content拼上下文 → 最终LLM生成</text>
+<text x="322" y="1336" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L0通常为较大父窗口；数量可能不足2，也可能来自同一原文</text>
+<rect x="60" y="1430" width="1480" height="210" rx="15" fill="#fff4df" stroke="#b4c5d7" stroke-width="2"/>
+<text x="82" y="1469" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">L1 / L2 例外</text>
+<text x="82" y="1501" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L0空且允许L1：去掉子块过滤重查，取前5命中，父块内存切成约400字符片段。</text>
+<text x="82" y="1528" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1候选总量最多16，片段沿用父命中融合分；精排和生成使用子片段，不自动返回大父正文。</text>
+<text x="82" y="1555" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1更大候选上限、末尾截断和重新切分都可能改变质量/成本，不能宣称风险不增或成本不增。</text>
+<text x="82" y="1582" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1仍空或上层捕获故障时返回L2；默认不调用最终生成器。底层吞异常、部分失败透传存在缺口。</text>
+<text x="82" y="1609" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">缺langchain时L1使用固定滑窗；离线切块另有备选实现缺陷，不能保证任何环境完全同构。</text>
+<rect x="60" y="1690" width="1480" height="215" rx="15" fill="#e8eef6" stroke="#b4c5d7" stroke-width="2"/>
+<text x="82" y="1729" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">离线产物与本次核验</text>
+<text x="82" y="1761" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">父2000 / 子400 / overlap60，按len字符切分；BGE max_length2048按token计，两者不是同一单位。</text>
+<text x="82" y="1788" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">父子块都向量化并insert入同一集合；子块保存parent_id和冗余parent_content。</text>
+<text x="82" y="1815" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">本地20816条＝3936逻辑父块＋16880子块；ID无重复、父ID引用与冗余正文一致。</text>
+<text x="82" y="1842" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">但顶层chunk_type全为child，3936条父类型错误；重新建集合不会自动修正旧JSON。</text>
+<text x="82" y="1869" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">这是本地文件核验，不代表在线Milvus当前记录数；本次未重建索引或做在线召回实验。</text>
+</svg></main></html>

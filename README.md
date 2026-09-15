@@ -1,18 +1,18 @@
 # 医疗知识问答系统 (Medical RAG System)
 
 基于 RAG（检索增强生成）的医疗科普知识问答系统，支持**离线知识入库**与**在线智能问答**两条链路。
-知识库来源于《默沙东诊疗手册（大众版）》公开科普内容，仅用于技术学习与演示。
+本地知识文件将来源标为《默沙东诊疗手册（大众版）》。项目定位为技术学习与演示；数据授权与合规状态需另行审查。
 
 ## 核心特性
 
-- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，降低「头痛」误命中「声带息肉」式答非所问风险；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），意图分类全程只跑一次。
+- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，该阈值是候选相对分布，不是正确率，单候选零分仍可能误命中；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），仅深通道执行一次意图分类，快通道命中不执行分类。
 - **混合检索**：BGE-M3 一次前向同时产出**稠密向量**（语义）+**稀疏向量**（词项权重），在 Milvus 中按 sparse 0.7 / dense 1.0 加权融合（WeightedRanker），兼顾语义理解与关键词命中。
-- **Small-to-Big 父子分块**：400 字符子块负责精准检索，2000 字符父块负责生成上下文；Top-16 粗排后取 Top-5 子块，按 `parent_id` 聚合，每个父块用最高分命中子块参与 BGE-reranker 精排，最终返回 Top-2 完整父块。
-- **子块过滤下推**：新建集合使用顶层 `chunk_type=='child'`，旧集合回退为 `parent_id != ""`。代码已避免父块抢占 Top-K；当前本机 Milvus 未启动，实时库状态需启动后运行 `scripts/check_chunk_type_filter.py --with-search` 复核。
-- **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 安全拒答（固定话术，**不调用 LLM**，避免参数知识编造）；降级水位经 `/health` 暴露，基础设施故障的降级结果不写缓存。
-- **GPU 加速**：向量化/重排自动使用 CUDA（fp16），离线入库从纯 CPU 的十余小时降到约 30 分钟。
+- **Small-to-Big 父子分块**：400 字符子块负责精准检索，2000 字符父块负责生成上下文；Top-16 粗排后取 Top-5 子块，按 `parent_id` 聚合，每个父块用最高分命中子块参与 BGE-reranker 精排，最终最多返回2条上下文；父正文缺失可回退子正文，L1使用子片段。
+- **子块过滤下推**：新建集合使用顶层 `chunk_type=='child'`，旧集合回退为 `parent_id != ""`。过滤能力已实现，但存量JSON有3936个父块误标child，不能保证未迁移数据不会抢占Top-K；2026-09-10记录中Milvus未连通；本次未重测，实时库状态需运行 `scripts/check_chunk_type_filter.py --with-search` 复核。
+- **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 默认固定拒答（不调用最终答案生成器；此前策略选择仍可能调用LLM）；降级水位经 `/health` 暴露，返回level>=2的结果不写缓存；底层吞异常和多子查询部分失败仍有透传缺口。
+- **设备选择**：向量化/重排按 `torch.cuda.is_available()` 选择 CUDA 或 CPU；CUDA 时启用 fp16。仓库没有可复核的固定耗时基准。
 - **LLM 自动选策略**：医疗咨询由大模型自动判断检索策略（直接检索 / HyDE / 子查询 / 回溯抽象），无需用户手动选择。
-- **多轮会话持久化**：MySQL `conversations` 表按 `session_id` 留存最近 5 轮，支持跨刷新续聊。
+- **会话存储**：MySQL `conversations` 表按 `session_id` 保存历史；Streamlit 会读取历史恢复界面。服务端生成不会自动读取已保存历史，`/chat` 依赖调用方提交 messages。
 - **RAG 评估（Ragas）**：本地 BGE-M3 + OpenAI 兼容裁判接口评估四项指标。当前 210/210 完整报告：Faithfulness 0.8163、Answer Relevancy 0.5007、Context Precision 0.8405、Context Recall 0.7619，等权综合 0.7299；主裁判为 GLM-4.6V，缺失单元由 DeepSeek 补评，报告保留逐项裁判来源。
 
 ## 项目结构
@@ -21,13 +21,13 @@
 med_rag/
 ├── .env.example              # 环境变量模板（LLM_API_KEY / LLM_BASE_URL / REDIS_PASSWORD）
 ├── pyproject.toml            # 依赖声明（uv 管理）
-├── requirements.txt          # 与 pyproject 同步的依赖清单
+├── requirements.txt          # pip依赖清单，与pyproject并非完全一致
 ├── uv.lock                   # uv 锁定文件
 ├── src/
 │   ├── config/
 │   │   └── settings.py       # 全局配置（路径/分块/检索/设备/模型）
 │   ├── offline_pipeline/     # 离线入库流水线
-│   │   ├── document_loader.py    # 多格式加载 + OCR
+│   │   ├── document_loader.py    # 多格式加载；OCR 接口当前为占位
 │   │   ├── data_cleaner.py       # 文本清洗、元数据抽取
 │   │   ├── chunk_splitter.py     # 父子分层分块
 │   │   ├── embedding_provider.py # BGE-M3 稠密+稀疏向量
@@ -37,7 +37,7 @@ med_rag/
 │   │   ├── main_api.py           # FastAPI 服务（RAGWebAPI 封装，双通道路由/缓存/FAQ/会话/评估/降级指标）
 │   │   ├── cache_manager.py      # Redis 缓存（md5 稳定键）
 │   │   ├── faq_search.py         # MySQL FAQ + jieba BM25（softmax 归一化，阈值 0.85）
-│   │   ├── intent_classifier.py  # BERT 意图识别（已重训，general/medical）
+│   │   ├── intent_classifier.py  # BERT 意图识别（general/medical）
 │   │   ├── strategy_selector.py  # LLM 自动检索策略选择
 │   │   ├── query_augmenter.py    # 四种 Query 增强
 │   │   ├── retrieval.py          # Milvus 混合检索 + Small-to-Big + 分层降级（L0/L1/L2）
@@ -64,7 +64,7 @@ med_rag/
 ├── data/                     # 数据（git 已屏蔽）
 │   ├── raw/                  # 原始 MSD 资源
 │   ├── clean_md/             # 清洗后 Markdown（约 2570 篇）
-│   ├── split_docs/           # 20816 条记录（16880 子块 + 3936 父块）
+│   ├── split_docs/docs.json  # 20816 条记录（按 parent_id：16880 子块 + 3936 父块）
 │   └── test_query/           # 测试集 / 评估数据
 └── docs/                     # architecture.md / data_source.md
 ```
@@ -76,7 +76,7 @@ med_rag/
 | 向量数据库 | Milvus（IVF_FLAT + 稀疏向量，加权混合检索） |
 | 向量模型 | BGE-M3（dense 1024 维 + sparse lexical weights） |
 | 重排模型 | BGE-reranker-large（FlagReranker） |
-| 意图分类 | BERT 中文（bert_query_classifier，已重训） |
+| 意图分类 | BERT 中文（bert_query_classifier；仓库有权重，无训练日志） |
 | 策略选择 | LLM 自动（direct / hyde / subquery / backtracking） |
 | 会话存储 | MySQL(PyMySQL) conversations 表 |
 | 缓存/FAQ | Redis + MySQL(PyMySQL) + jieba BM25 |
@@ -104,42 +104,41 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2. GPU（可选但强烈推荐）
+### 2. GPU（可选）
 
 有 NVIDIA 显卡时，安装 CUDA 版 PyTorch 可大幅加速向量化：
 
 ```bash
-# RTX 40 系（驱动支持 CUDA 12.6）安装 cu126 版 torch
-uv pip install "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
+# 示例：安装与本机驱动、Python 和项目锁文件兼容的 CUDA 版 PyTorch
+# 具体命令请按 PyTorch 官方安装矩阵选择，不要照抄固定版本。
 ```
 
-> 用 `nvidia-smi` 右上角 `CUDA Version` 查看驱动支持的最高 CUDA 版本，
-> 只要 torch 的 cuXXX ≤ 该值即可。无 GPU 时代码自动回退 CPU，无需改动。
+> 用 `nvidia-smi` 和 `python -c "import torch; print(torch.cuda.is_available())"` 核验。无 GPU 时代码回退 CPU。
 
 ### 3. 配置环境变量
 
 ```bash
 cp .env.example .env
 # 编辑 .env，至少填入 LLM_API_KEY 与 LLM_BASE_URL
-# 若使用本机 Docker 里的 Redis（默认带 requirepass），还需填 REDIS_PASSWORD=1234
+# REDIS_PASSWORD 必须与实际 Redis 配置一致；.env.example 的本地示例值为 1234
 ```
 
 ### 4. 准备模型与数据
 
 - 模型放入 `src/models/`：`bge-m3`、`bert-base-chinese`、`bge-reranker-large`。
 - 原始 MSD 数据放入 `data/raw/MSDZHConsumerMedicalTopics/`，
-  用 `python scripts/extract_msd.py` 抽取、清洗到 `data/clean_md/`。
+  抽取脚本仍硬编码旧路径，需先核对ROOT_DIR/OUTPUT_MD_DIR；正式入库默认读取data/clean_md，不能直接承诺该脚本自动写到此处。
 
 ### 5. 启动中间件
 
 - Milvus：`localhost:19530`
-- Redis：`localhost:6379`（缓存，可选；本机通常用 Docker 容器 `milvus-redis`，启动带 `--requirepass 1234`，需在 `.env` 设 `REDIS_PASSWORD=1234` 才能连通，否则健康页 Redis 显示红、自动降级为无缓存模式）
-- MySQL：`localhost:3306`（可选，FAQ/会话，未启动会自动降级）
+- Redis：`localhost:6379`（缓存，可选；密码由 `REDIS_PASSWORD` 指定。`.env.example` 的本地示例值为 1234，必须与实际 Redis 配置一致）
+- MySQL：`localhost:3306`（FAQ/会话，可选；不可用时相关能力受限）
 
 ### 6. 运行
 
 ```bash
-# 离线入库（一次性，GPU 上约 30 分钟）
+# 离线入库（耗时取决于设备、数据与依赖状态）
 python scripts/run_offline_ingest.py
 # 也可指定目录：python scripts/run_offline_ingest.py --data-dir ./data/clean_md
 
@@ -179,7 +178,7 @@ print(resp.json()["answer"])
 | 接口 | 说明 |
 |------|------|
 | `POST /query` | 单轮问答（含 FAQ/缓存/意图/策略/检索/生成全流程） |
-| `POST /chat` | 多轮对话（携带 `session_id` 续聊） |
+| `POST /chat` | 多轮对话（上下文来自请求中的 `messages`；`session_id` 用于保存） |
 | `GET /health` | 健康检查（含各组件状态与降级水位指标） |
 | `GET /stats` | 系统统计 |
 | `GET /available_strategies` | 可用检索策略列表 |
@@ -219,19 +218,19 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 ## 性能与调优
 
-- **向量生成批大小**：`embedding_provider.py` 与 `run_offline_ingest.py` 中 `batch_size`（默认 64，8G 显存实测安全）。
+- **向量生成批大小**：离线入口传入 64，`generate_embeddings` 内部也固定为 64；不同设备是否可用需实测。
   持续跑时若显存顶格导致降速，代码已每批自动 `torch.cuda.empty_cache()`。
-- **max_length**：默认 2048（块最长约 1300 token），勿盲目调大以免浪费显存。
+- **max_length**：代码固定为 2048；是否适合新数据需根据 tokenizer 后长度分布验证。
 - **Milvus 索引**：`MILVUS_NLIST` / `MILVUS_NPROBE` 可按数据量调整。
 
 ## 故障排查
 
 | 问题 | 排查 |
 |------|------|
-| 模型加载失败 | 确认 `src/models/` 下模型完整；FlagEmbedding 需 ≥1.3（API 已适配） |
+| 模型加载失败 | 确认 `src/models/` 下模型完整；项目锁定 `flagembedding==1.3.5` |
 | CUDA 不可用 | `python -c "import torch;print(torch.cuda.is_available())"`，装 cuXXX 版 torch |
 | Milvus 连接失败 | 确认服务在 19530 端口运行 |
-| Redis 健康页显示红 | 多为密码未配：本机 Docker Redis 带 `requirepass`，需在 `.env` 设 `REDIS_PASSWORD=1234`；未配则自动降级为无缓存 |
+| Redis 健康页显示红 | 检查地址和密码；`REDIS_PASSWORD` 必须与实际服务一致，连接失败时降级为无缓存 |
 | Windows 启动即崩溃(0xC0000005) | 原生 DLL 冲突：改用 `.\run_api_safe.ps1` 以最小化 PATH 启动；或确保 `.venv\Scripts` 含 VC++ 运行时 DLL（重建 venv 后需重新复制） |
 | Redis/MySQL 报错 | 可选组件，未启动会自动降级，不影响主 RAG 链路 |
 | API 启动报相对导入错 | 用 `python scripts/run_api.py`，勿直接跑 main_api.py |
@@ -241,6 +240,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 本项目仅用于**健康科普学习与技术演示**，不构成任何医疗诊断、治疗或用药建议。
 如有身体不适，请前往正规医疗机构就诊。
 
-## 许可证
+仓库当前未发现根目录许可证文件，因此本文不声明许可证类型。
 
-MIT License
+## 2026-09-15流程核对
+
+完整校订见[学习与面试全解](docs/med_rag_学习与面试全解.md)与[架构说明](docs/architecture.md)。本次核算本地数据、重读API/入库/评测实现，并校订两张流程图。已知DOCX加载、数值清洗、缓存上下文、恢复历史timestamp、部分故障透传和并行评测脚本语法问题见主文档；这些尚未修复的实现不能作为稳定功能承诺。Milvus/BGE/BERT初始化失败可能阻断启动，不属于已运行API的L2响应。默认评测问题文件仅5条，与210条历史报告不同。

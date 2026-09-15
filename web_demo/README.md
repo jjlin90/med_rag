@@ -12,7 +12,7 @@ python scripts/run_api.py
 .\run_api_safe.ps1
 ```
 
-> 后端需连通 Redis 缓存：本机若用 Docker 容器 `milvus-redis`（启动带 `--requirepass`），须在 `.env` 设 `REDIS_PASSWORD=1234` 才能连通；未配则健康页 Redis 显示红、自动降级为无缓存模式，不影响问答主流程。
+> Redis 是可选缓存；`REDIS_PASSWORD` 必须与实际服务一致。`.env.example` 中的 1234 只是本地示例。连接失败时健康页显示不可用，问答链路以无缓存模式继续。
 
 2. 再启动前端（另开终端，在项目根目录）：
 
@@ -25,7 +25,7 @@ web_demo/.venv/Scripts/python.exe -m streamlit run web_demo/app.py
 ## 功能
 
 - 单一问答 `/query`
-- 多轮对话 `/chat`（按 `session_id` 持久化，刷新不丢历史）
+- 多轮对话 `/chat`：界面按 `session_id` 从 MySQL 接口恢复展示，并把当前界面 messages 提交给后端；后端不会自行把数据库历史注入生成
 - 实时健康检查
 - 系统统计面板
 - 引用来源折叠展示

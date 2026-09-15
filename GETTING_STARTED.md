@@ -5,8 +5,8 @@
 ## 前置条件
 
 - Python 3.10（项目用 uv 管理，会自动使用 `.venv`）
-- 可选：NVIDIA GPU（显著加速向量化，RTX 40 系推荐）
-- 可选：Milvus(19530) / Redis(6379) / MySQL(3306)（后两者未启动会自动降级；Redis 若用本机 Docker 版需设 `REDIS_PASSWORD=1234`）
+- 可选：NVIDIA GPU；是否提速及可用 batch 需在本机实测
+- 真实 RAG/API 启动需要 Milvus(19530)；Redis(6379) 与 MySQL(3306) 连接失败时相关缓存、FAQ、会话能力会降级
 
 ## 五步跑通
 
@@ -20,8 +20,8 @@ uv sync                 # 推荐：按 uv.lock 一键建 .venv 并安装
 ### 2.（有 GPU 才做）安装 CUDA 版 PyTorch
 
 ```bash
-# 先 nvidia-smi 看驱动支持的 CUDA 版本（右上角），选 ≤ 它的 cuXXX
-uv pip install "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
+# 先用 nvidia-smi 查看驱动，再按 PyTorch 官方安装矩阵选择
+# 与 Python 3.10、驱动和项目依赖兼容的 CUDA wheel。
 ```
 
 ### 3. 配置环境变量
@@ -29,7 +29,7 @@ uv pip install "torch==2.13.0+cu126" --index-url https://download.pytorch.org/wh
 ```bash
 cp .env.example .env
 # 编辑 .env，至少填入 LLM_API_KEY 与 LLM_BASE_URL
-# Redis 若用本机 Docker 版（milvus-redis，带 requirepass），需补 REDIS_PASSWORD=1234
+# REDIS_PASSWORD 必须与实际 Redis 服务一致；.env.example 的本地示例值为 1234
 ```
 
 ### 4. 准备模型与数据
@@ -41,7 +41,7 @@ cp .env.example .env
 ### 5. 运行
 
 ```bash
-# 离线入库（一次性；GPU 约 30 分钟，CPU 十余小时）
+# 离线入库（一次性；耗时需按当前设备实测）
 python scripts/run_offline_ingest.py
 # 也可指定目录：python scripts/run_offline_ingest.py --data-dir ./data/clean_md
 
@@ -62,7 +62,7 @@ python scripts/test_query_pipeline.py
 python scripts/check_chunk_type_filter.py
 python scripts/check_chunk_type_filter.py --with-search --query "一型糖尿病和二型糖尿病有什么区别"
 
-# 分层降级策略回归测试（9 项 mock 场景，无需 Milvus）
+# 分层降级策略回归测试（mock/控制流测试，无需 Milvus）
 python scripts/test_degrade_policy.py
 ```
 
@@ -79,12 +79,12 @@ python scripts/simple_query_test.py       # 不需要 LLM API
 
 | 问题 | 处理 |
 |------|------|
-| FlagEmbedding 报错 | 需 ≥1.3（新版 API 为直接实例化，代码已适配） |
+| FlagEmbedding 报错 | 项目锁定 `flagembedding==1.3.5`，先确认安装版本与本地模型完整 |
 | CUDA 不可用 | `python -c "import torch;print(torch.cuda.is_available())"`；装 cuXXX 版 torch |
 | 显存不足(OOM) | 把 `embedding_provider.py` 和 `run_offline_ingest.py` 的 `batch_size` 从 64 调小到 32 |
 | Milvus 连不上 | 确认服务在 19530；离线入库必须先启动 Milvus |
 | API 启动报相对导入错 | 用 `python scripts/run_api.py`，勿直接跑 `src/online_service/main_api.py` |
-| Redis 健康页显示红 | 本机 Docker Redis 带 requirepass，需在 `.env` 设 `REDIS_PASSWORD=1234`；未配则降级为无缓存 |
+| Redis 健康页显示红 | 检查服务地址和密码；`REDIS_PASSWORD` 必须与实际 Redis 配置一致，失败时降级为无缓存 |
 | Windows 启动崩溃(0xC0000005) | 原生 DLL 冲突，改用 `.\run_api_safe.ps1` 最小化 PATH 启动 |
 | Redis/MySQL 报错 | 可选组件，未启动自动降级，不影响主链路 |
 
@@ -94,7 +94,7 @@ python scripts/simple_query_test.py       # 不需要 LLM API
 # 构造意图分类训练数据（医疗/通用各 ~2500 条，写入 data/intent_train/）
 python scripts/build_intent_data.py
 
-# 微调 BERT 意图分类器（RTX 4060 约 3-4 分钟，保存最佳模型到 src/models/bert_query_classifier）
+# 微调 BERT 意图分类器（保存模型到 src/models/bert_query_classifier；耗时需实测）
 python scripts/train_intent.py
 
 # RAG 评估（Ragas 四项指标）
