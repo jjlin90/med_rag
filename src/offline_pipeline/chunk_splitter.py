@@ -49,6 +49,8 @@ class ChunkSplitter:
         self.parent_chunk_size = config.PARENT_CHUNK_SIZE
         self.child_chunk_size = config.CHILD_CHUNK_SIZE
         self.chunk_overlap = config.CHUNK_OVERLAP
+        if not 0 <= self.chunk_overlap < min(self.parent_chunk_size, self.child_chunk_size):
+            raise ValueError('chunk overlap must be nonnegative and smaller than both chunk sizes')
 
     def split_documents(self, documents: List[Document]) -> List[Chunk]:
         """
@@ -187,37 +189,25 @@ class ChunkSplitter:
     def _simple_split(self, document: Document, chunk_size: int, chunk_type: str) -> List[Chunk]:
         """简单的文本分割（作为备选方案）"""
         chunks = []
-        content = document.page_content
+        content = document.content if isinstance(document, Chunk) else document.page_content
         metadata = document.metadata.copy()
 
         # 添加chunk类型信息
         metadata['chunk_type'] = chunk_type
 
         # 简单按字符分割
-        for i in range(0, len(content), chunk_size - self.chunk_overlap):
+        for index, i in enumerate(range(0, len(content), chunk_size - self.chunk_overlap)):
             chunk_content = content[i:i + chunk_size]
-
-            # 确保在单词边界处分割
-            if i + chunk_size < len(content):
-                # 找到最后一个标点符号
-                last_punctuation = -1
-                for j in range(len(chunk_content) - 1, 0, -1):
-                    if chunk_content[j] in '。！？；：, ':
-                        last_punctuation = j
-                        break
-
-                if last_punctuation > 0:
-                    chunk_content = chunk_content[:last_punctuation + 1]
-
-            chunk_id = f"{metadata.get('file_path', 'unknown')}_{i // chunk_size}_{chunk_type}"
+            base_id = document.id if isinstance(document, Chunk) else metadata.get('file_path', 'unknown')
+            chunk_id = f"{base_id}_{index}_{chunk_type}"
 
             chunk = Chunk(
                 id=chunk_id,
                 content=chunk_content,
                 metadata={
                     **metadata,
-                    'chunk_index': i // chunk_size,
-                    'total_chunks': (len(content) + chunk_size - 1) // chunk_size
+                    'chunk_index': index,
+                    'total_chunks': len(range(0, len(content), chunk_size - self.chunk_overlap))
                 },
                 chunk_type=chunk_type
             )
@@ -261,8 +251,9 @@ class ChunkSplitter:
                 metadata=item['metadata'],
                 parent_id=item.get('parent_id'),
                 parent_content=item.get('parent_content'),
-                chunk_type=item.get('chunk_type', 'child')
+                chunk_type='child' if item.get('parent_id') else 'parent'
             )
+            chunk.metadata['chunk_type'] = chunk.chunk_type
             chunks.append(chunk)
 
         logger.info(f"Loaded {len(chunks)} chunks from {input_path}")

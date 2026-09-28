@@ -5,15 +5,29 @@
 
 ## 核心特性
 
-- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，该阈值是候选相对分布，不是正确率，单候选零分仍可能误命中；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），仅深通道执行一次意图分类，快通道命中不执行分类。
+- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，该阈值是候选相对分布，不是正确率，已拒绝原始 BM25 零分候选；仍需独立负样本校准；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），仅深通道执行一次意图分类，快通道命中不执行分类。
 - **混合检索**：BGE-M3 一次前向同时产出**稠密向量**（语义）+**稀疏向量**（词项权重），在 Milvus 中按 sparse 0.7 / dense 1.0 加权融合（WeightedRanker），兼顾语义理解与关键词命中。
 - **Small-to-Big 父子分块**：400 字符子块负责精准检索，2000 字符父块负责生成上下文；Top-16 粗排后取 Top-5 子块，按 `parent_id` 聚合，每个父块用最高分命中子块参与 BGE-reranker 精排，最终最多返回2条上下文；父正文缺失可回退子正文，L1使用子片段。
-- **子块过滤下推**：新建集合使用顶层 `chunk_type=='child'`，旧集合回退为 `parent_id != ""`。过滤能力已实现，但存量JSON有3936个父块误标child，不能保证未迁移数据不会抢占Top-K；2026-09-10记录中Milvus未连通；本次未重测，实时库状态需运行 `scripts/check_chunk_type_filter.py --with-search` 复核。
-- **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 默认固定拒答（不调用最终答案生成器；此前策略选择仍可能调用LLM）；降级水位经 `/health` 暴露，返回level>=2的结果不写缓存；底层吞异常和多子查询部分失败仍有透传缺口。
+- **子块过滤下推**：新建集合使用 `chunk_type=='child' and parent_id != ''`，旧集合回退为 `parent_id != ""`。过滤能力已实现，但存量JSON有3936个父块误标child，已通过 parent_id 联合过滤阻止这些逻辑父块抢占 Top-K，但仍需迁移存量标签；2026-09-10记录中Milvus未连通；本次未重测，实时库状态需运行 `scripts/check_chunk_type_filter.py --with-search` 复核。
+- **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 默认固定拒答（不调用最终答案生成器；此前策略选择仍可能调用LLM）；降级水位经 `/health` 暴露，返回level>=2的结果不写缓存；Milvus/向量化异常向上传播，任一子查询故障升级 L2；重排故障也标记 L2。
 - **设备选择**：向量化/重排按 `torch.cuda.is_available()` 选择 CUDA 或 CPU；CUDA 时启用 fp16。仓库没有可复核的固定耗时基准。
 - **LLM 自动选策略**：医疗咨询由大模型自动判断检索策略（直接检索 / HyDE / 子查询 / 回溯抽象），无需用户手动选择。
 - **会话存储**：MySQL `conversations` 表按 `session_id` 保存历史；Streamlit 会读取历史恢复界面。服务端生成不会自动读取已保存历史，`/chat` 依赖调用方提交 messages。
 - **RAG 评估（Ragas）**：本地 BGE-M3 + OpenAI 兼容裁判接口评估四项指标。当前 210/210 完整报告：Faithfulness 0.8163、Answer Relevancy 0.5007、Context Precision 0.8405、Context Recall 0.7619，等权综合 0.7299；主裁判为 GLM-4.6V，缺失单元由 DeepSeek 补评，报告保留逐项裁判来源。
+
+## 文档导航
+
+| 阅读目的 | 文档 |
+|---|---|
+| 环境准备与运行 | [快速上手](GETTING_STARTED.md) |
+| 当前调用链路与组件职责 | [架构说明](docs/architecture.md) |
+| 数据来源、格式支持与存量数据边界 | [数据来源与处理边界](docs/data_source.md) |
+| 系统原理与面试复习 | [学习与面试全解](docs/med_rag_学习与面试全解.md) |
+| 已修复问题、实现原因与验收依据 | [工程修订与面试详解](docs/20260927_工程修订与面试详解.md) |
+| 历史 210 题报告与失败样本分析 | [Ragas 评估与 badcase 分析](docs/Ragas评估与badcase分析.md)（历史评测，不代表本次代码修订后重测） |
+| 父子块过滤、降级与迁移边界 | [Small-to-Big 缺陷修复报告](docs/diagrams/Small-to-Big缺陷修复报告.md)（区分当前实现与历史运行记录） |
+
+旧版 [面试全解](docs/med_rag_面试全解.md) 和 [学习指南](docs/rag_learning_guide.md) 保留为合并文档的导航入口，不再分别维护完整正文。审查产物与本地资料的用途见 [artifacts 目录说明](artifacts/README.md)。
 
 ## 项目结构
 
@@ -21,7 +35,7 @@
 med_rag/
 ├── .env.example              # 环境变量模板（LLM_API_KEY / LLM_BASE_URL / REDIS_PASSWORD）
 ├── pyproject.toml            # 依赖声明（uv 管理）
-├── requirements.txt          # pip依赖清单，与pyproject并非完全一致
+├── requirements.txt          # pip直接依赖清单，与pyproject同步
 ├── uv.lock                   # uv 锁定文件
 ├── src/
 │   ├── config/
@@ -35,7 +49,7 @@ med_rag/
 │   ├── online_service/       # 在线问答服务
 │   │   ├── rag_system.py         # RAG 核心编排（EduRAG 对齐六步：意图→策略→检索→重排→上下文→生成）
 │   │   ├── main_api.py           # FastAPI 服务（RAGWebAPI 封装，双通道路由/缓存/FAQ/会话/评估/降级指标）
-│   │   ├── cache_manager.py      # Redis 缓存（md5 稳定键）
+│   │   ├── cache_manager.py      # Redis 缓存（v2；query 使用 SHA-256，FAQ 使用 MD5）
 │   │   ├── faq_search.py         # MySQL FAQ + jieba BM25（softmax 归一化，阈值 0.85）
 │   │   ├── intent_classifier.py  # BERT 意图识别（general/medical）
 │   │   ├── strategy_selector.py  # LLM 自动检索策略选择
@@ -60,7 +74,7 @@ med_rag/
 │   ├── test_degrade_policy.py# 分层降级策略 mock 测试（L0/L1/L2 全场景）
 │   ├── update_pptx_text.py   # 同步 presentation.pptx 中与代码脱节的表述（支持 --dry-run）
 │   └── test_*.py / simple_*.py   # 测试与简化版工具
-├── main.py                   # 命令行交互入口（EduRAG 式：选学科→输入问题→RAG 生成）
+├── main.py                   # 命令行交互入口（直接输入问题→RAG 生成，不含学科选择）
 ├── data/                     # 数据（git 已屏蔽）
 │   ├── raw/                  # 原始 MSD 资源
 │   ├── clean_md/             # 清洗后 Markdown（约 2570 篇）
@@ -125,9 +139,9 @@ cp .env.example .env
 
 ### 4. 准备模型与数据
 
-- 模型放入 `src/models/`：`bge-m3`、`bert-base-chinese`、`bge-reranker-large`。
+- 在线模型放入 `src/models/`：`bge-m3`、`bert_query_classifier`、`bge-reranker-large`。训练分类器还需要 `bert-base-chinese`；仅离线向量化需要 `bge-m3`。
 - 原始 MSD 数据放入 `data/raw/MSDZHConsumerMedicalTopics/`，
-  抽取脚本仍硬编码旧路径，需先核对ROOT_DIR/OUTPUT_MD_DIR；正式入库默认读取data/clean_md，不能直接承诺该脚本自动写到此处。
+  运行 `python scripts/extract_msd.py`，默认输出到 `data/clean_md/`；可用 `--input-dir`、`--output-dir` 覆盖路径。
 
 ### 5. 启动中间件
 
@@ -156,8 +170,9 @@ python main.py
 python scripts/test_query_pipeline.py
 ```
 
-> ⚠️ 不要直接 `python src/online_service/main_api.py`——它用相对导入，
-> 直接跑会报包导入错误。请用 `scripts/run_api.py` 或新建的 `python main.py`。
+> 推荐使用 `python scripts/run_api.py`；`python -m src.online_service.main_api`
+> 和 `python src/online_service/main_api.py` 共用相同启动参数，默认端口均为 8005。
+> `python main.py` 是命令行问答，不启动 HTTP 服务。
 
 启动后访问 `http://localhost:8005/docs` 查看接口文档。
 
@@ -178,6 +193,7 @@ print(resp.json()["answer"])
 | 接口 | 说明 |
 |------|------|
 | `POST /query` | 单轮问答（含 FAQ/缓存/意图/策略/检索/生成全流程） |
+| `GET /` | API 名称与版本 |
 | `POST /chat` | 多轮对话（上下文来自请求中的 `messages`；`session_id` 用于保存） |
 | `GET /health` | 健康检查（含各组件状态与降级水位指标） |
 | `GET /stats` | 系统统计 |
@@ -233,7 +249,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 | Redis 健康页显示红 | 检查地址和密码；`REDIS_PASSWORD` 必须与实际服务一致，连接失败时降级为无缓存 |
 | Windows 启动即崩溃(0xC0000005) | 原生 DLL 冲突：改用 `.\run_api_safe.ps1` 以最小化 PATH 启动；或确保 `.venv\Scripts` 含 VC++ 运行时 DLL（重建 venv 后需重新复制） |
 | Redis/MySQL 报错 | 可选组件，未启动会自动降级，不影响主 RAG 链路 |
-| API 启动报相对导入错 | 用 `python scripts/run_api.py`，勿直接跑 main_api.py |
+| API 启动入口 | 推荐 `python scripts/run_api.py`；模块与文件入口共用同一组参数 |
 
 ## 免责声明
 
@@ -242,6 +258,27 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 仓库当前未发现根目录许可证文件，因此本文不声明许可证类型。
 
-## 2026-09-15流程核对
+## 历史流程核对（2026-09-15，以下为当时记录）
 
 完整校订见[学习与面试全解](docs/med_rag_学习与面试全解.md)与[架构说明](docs/architecture.md)。本次核算本地数据、重读API/入库/评测实现，并校订两张流程图。已知DOCX加载、数值清洗、缓存上下文、恢复历史timestamp、部分故障透传和并行评测脚本语法问题见主文档；这些尚未修复的实现不能作为稳定功能承诺。Milvus/BGE/BERT初始化失败可能阻断启动，不属于已运行API的L2响应。默认评测问题文件仅5条，与210条历史报告不同。
+
+
+## 2026-09-27 代码修复与验证入口
+
+上述历史记录中的 DOCX、数值误删、缓存语义/开关/会话保存、timestamp、故障透传和并行脚本语法缺陷已修复。当前准确流程见 [架构说明](docs/architecture.md)，完整讲解与面试追问保留在 [学习与面试全解](docs/med_rag_学习与面试全解.md)，具体修复与验收依据见 [工程修订与面试详解](docs/20260927_工程修订与面试详解.md)。
+
+query 缓存按问题、source_filter、strategy、history 生成 v2 键；只去首尾空白。带历史、来源限制或显式策略的请求跳过 FAQ。`use_cache=false` 同时关闭 query 和 FAQ 缓存。缓存命中也保存本轮会话。API 仍是技术演示，未实现身份鉴权和会话访问授权，不应直接暴露为公网多用户服务。
+
+```bash
+# 主环境；Streamlit 为可选演示依赖
+uv sync --extra demo
+python -m streamlit run web_demo/app.py
+
+# 无外部模型调用的边界回归；Streamlit 未安装时其交互测试会跳过
+python -m unittest discover -s tests -v
+python scripts/test_quality_optimizations.py
+python scripts/test_degrade_policy.py
+python scripts/audit_static.py
+```
+
+回归测试证明指定输入和故障场景的行为，不证明临床正确率、线上服务可用性或已迁移全部历史数据。历史 210 题结果不能视为本次修复后重新测得的质量。

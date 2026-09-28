@@ -26,12 +26,23 @@
 import argparse
 import csv
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 METRICS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+
+
+def valid_score(row):
+    """Only complete, finite Ragas rows are comparable; genuine zero is valid."""
+    return isinstance(row, dict) and all(
+        isinstance(row.get(metric), (int, float))
+        and not isinstance(row[metric], bool)
+        and math.isfinite(row[metric]) and 0 <= row[metric] <= 1
+        for metric in METRICS
+    )
 
 
 def parse_chunk(spec: str):
@@ -55,16 +66,22 @@ def main():
     per_judge = []
     seen_questions = set()
     dup = 0
+    invalid = 0
 
     for spec in args.chunk:
         path, model = parse_chunk(spec)
         if not path.exists():
-            print(f"[警告] 分块文件不存在，跳过: {path}")
-            continue
-        report = json.load(open(path, encoding="utf-8"))
+            raise FileNotFoundError(f"分块文件不存在: {path}")
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("engine") != "ragas":
+            raise ValueError(f"不能混合评估引擎或推断未知引擎: {path}")
         scores = report.get("scores", [])
         valid = 0
+        accepted = []
         for s in scores:
+            if not valid_score(s):
+                invalid += 1
+                continue
             q = s.get("question", "")
             if q and q in seen_questions:
                 dup += 1
@@ -74,21 +91,21 @@ def main():
             s = dict(s)
             s["_judge"] = model
             all_scores.append(s)
+            accepted.append(s)
             valid += 1
 
-        # 该裁判下的分块均值（只统计非全 0 的有效条，避免额度事故拖低）
-        effective = [s for s in scores
-                     if any(s.get(m, 0) > 0 for m in METRICS)]
-        avg = {m: (statistics.mean([s.get(m, 0) for s in effective])
-                   if effective else 0.0) for m in METRICS}
+        # 与全局使用同一批去重后的完整评分；缺失不补零，真实零分保留。
+        effective = accepted
+        avg = {m: (statistics.mean([s[m] for s in effective])
+                   if effective else None) for m in METRICS}
         per_judge.append({
             "judge": model,
             "file": str(path),
             "engine": report.get("engine", "?"),
             "n_scored": valid,
             "n_effective": len(effective),
-            "average": {m: round(avg[m], 4) for m in METRICS},
-            "composite": round(statistics.mean(avg.values()), 4) if effective else 0.0,
+            "average": {m: round(avg[m], 4) if avg[m] is not None else None for m in METRICS},
+            "composite": round(statistics.mean(avg.values()), 4) if effective else None,
         })
 
     if not all_scores:
@@ -117,6 +134,7 @@ def main():
         ),
         "n_total": len(all_scores),
         "n_duplicate_dropped": dup,
+        "n_invalid_dropped": invalid,
         "average": {m: round(overall[m], 4) for m in METRICS},
         "composite": round(composite, 4),
         "judge_spread": judge_spread,
@@ -126,10 +144,11 @@ def main():
 
     out_json = Path(args.out_json).resolve()
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(out, open(out_json, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    out_json.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # CSV 逐条明细
     out_csv = Path(args.out_csv).resolve()
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
     cols = ["question", "_judge"] + METRICS
     with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
@@ -151,8 +170,9 @@ def main():
     print("-" * 78)
     print("各裁判负责题块的表现（混入题目难度，仅作运行诊断）:")
     for j in per_judge:
+        composite_text = f"{j['composite']:.4f}" if j['composite'] is not None else "NA"
         print(f"  {j['judge']:<24} n={j['n_effective']:<4} "
-              f"composite={j['composite']:.4f}  {j['average']}")
+              f"composite={composite_text}  {j['average']}")
     print("-" * 78)
     print(f"路由题块 composite 极差={judge_spread['composite_range']:.4f}  "
           f"标准差={judge_spread['composite_stdev']:.4f}  "

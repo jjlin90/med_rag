@@ -28,6 +28,7 @@ from src.offline_pipeline.embedding_provider import BGEEmbeddingProvider
 from src.offline_pipeline.milvus_store import MilvusStore
 
 # 配置日志
+(project_root / 'logs').mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -60,7 +61,7 @@ def validate_config(config: Config) -> bool:
         return False
 
     # 检查必要的模型
-    required_models = ['bge-m3', 'bert-base-chinese', 'bge-reranker-large']
+    required_models = ['bge-m3']
     for model_name in required_models:
         model_path = model_dir / model_name
         if not model_path.exists():
@@ -101,7 +102,7 @@ def process_documents(config: Config, data_dir: Optional[Path] = None):
 
     if not documents:
         logger.error("没有找到任何文档，请检查数据目录")
-        return
+        raise ValueError(f'No supported documents found in {data_dir}')
 
     # 4. 清洗文档
     logger.info("清洗文档...")
@@ -187,7 +188,7 @@ def main():
         # 3. 验证配置
         if not validate_config(config):
             logger.error("配置验证失败，退出")
-            return
+            raise SystemExit(1)
 
         # 4. 处理文档
         process_documents(config, data_dir=args.data_dir)

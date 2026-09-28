@@ -39,7 +39,7 @@ window.slideDataMap.set(4, `
           </div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400">
             <p class="text-white text-lg font-semibold mb-1">价值</p>
-            <p class="text-slate-400 text-base leading-relaxed">高频缓存直答省成本；医疗走检索保权威；多轮连贯。</p>
+            <p class="text-slate-400 text-base leading-relaxed">高频问题可复用缓存；医学问题使用检索依据；多轮由客户端提交历史。</p>
           </div>
         </div>
       </div>

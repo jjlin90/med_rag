@@ -3,12 +3,20 @@ Main API Module
 FastAPI接口入口
 """
 
+# 支持直接运行文件；包导入时不修改搜索路径。
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "src.online_service"
+
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, AliasChoices
 
 from ..config.settings import Config
 from .cache_manager import CacheManager, query_cache_key
@@ -27,13 +35,20 @@ logger = logging.getLogger(__name__)
 
 # Pydantic模型
 class QueryRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1)
     source_filter: Optional[str] = None
     use_cache: bool = True
     # 检索策略改由大模型自动判断；保留字段用于兼容与调试，None 表示自动
-    strategy: Optional[str] = None
+    strategy: Optional[Literal['direct', 'hyde', 'subquery', 'backtracking']] = None
     # 会话 ID：用于跨会话持久化历史（对齐 EduRag）；为空则后端自动生成
     session_id: Optional[str] = None
+
+    @field_validator('question')
+    @classmethod
+    def validate_question(cls, value):
+        if not value.strip():
+            raise ValueError('question cannot be blank')
+        return value
 
 class QueryResponse(BaseModel):
     answer: str
@@ -59,9 +74,16 @@ class HealthResponse(BaseModel):
     degradation: Dict[str, Any] = {}
 
 class ChatHistoryItem(BaseModel):
-    role: str
-    content: str
-    timestamp: float
+    role: Literal['user', 'assistant']
+    content: str = Field(min_length=1)
+    timestamp: Optional[float] = None
+
+    @field_validator('content')
+    @classmethod
+    def validate_content(cls, value):
+        if not value.strip():
+            raise ValueError('content cannot be blank')
+        return value
 
 class ChatRequest(BaseModel):
     messages: List[ChatHistoryItem]
@@ -76,7 +98,7 @@ class EvaluateItem(BaseModel):
     contexts: Optional[List[str]] = None
     # 标准答案（可选）。提供后 Ragas 可额外计算 context_precision / context_recall；
     # 不提供则仅评估 faithfulness / answer_relevancy。兼容别名 reference_answer。
-    ground_truth: Optional[str] = None
+    ground_truth: Optional[str] = Field(default=None, validation_alias=AliasChoices('ground_truth', 'reference_answer'))
 
 class EvaluateRequest(BaseModel):
     items: List[EvaluateItem]
@@ -316,7 +338,7 @@ class RAGWebAPI:
           → 通用知识？→ 直接 LLM，不检索
           → LLM 策略选择：直接检索 / 回溯 / 子查询 / HyDE
           → 混合检索(dense+sparse) → Small-to-Big(子块→父块去重) → Reranker 精排(Top-2)
-          → Prompt 组装 → qwen-plus 流式生成
+          → Prompt 组装 → 配置的 LLM 非流式生成
 
         最后写 MySQL 会话历史 + 写缓存，返回响应。
         """
@@ -328,11 +350,14 @@ class RAGWebAPI:
 
         # ===== 通道① 快通道：FAQ 优先（对齐 EduRag "先 BM25/FAQ 命中即返"）=====
         # Step 1: Redis 缓存查找（对齐 EduRag "Redis 查缓存 answer:(query)"）
-        cache_key = query_cache_key(question)
+        cache_key = query_cache_key(question, source_filter, strategy, history)
         if use_cache and self.cache.is_connected():
             cached_result = self.cache.get(cache_key)
-            if cached_result:
+            if (isinstance(cached_result, dict) and cached_result.get('answer')
+                    and cached_result.get('degrade_level', 0) < 2):
                 logger.info(f"通用缓存命中: {question}")
+                self.conversation_store.update_session_history(
+                    session_id, question, cached_result['answer'])
                 response_time = time.time() - start_time
                 return QueryResponse(
                     answer=cached_result['answer'],
@@ -352,7 +377,10 @@ class RAGWebAPI:
         # 不再做意图预判——EduRag 的设计是所有查询先过 FAQ 快通道，
         # FAQ 命中则直接返回（高频标准问题不需要走昂贵 RAG），
         # 未命中再降级到深通道。医疗问题如果恰好命中了高质量 FAQ 同样可以直接返回。
-        faq_answer, need_rag = self.faq_search.search_faq(question)
+        # FAQ has no conversation context or source/strategy filtering.
+        faq_answer, need_rag = (None, True)
+        if not history and not source_filter and not strategy:
+            faq_answer, need_rag = self.faq_search.search_faq(question, use_cache=use_cache)
 
         if not need_rag and faq_answer:
             # FAQ 快通道命中：写会话历史 + 写缓存 + 返回
@@ -447,7 +475,7 @@ class RAGWebAPI:
             degrade_reason=degrade_reason,
         )
 
-    def run(self, host: str = "0.0.0.0", port: int = 8000, debug: bool = False):
+    def run(self, host: str = "0.0.0.0", port: int = 8005, debug: bool = False):
         """运行API服务（延迟导入 uvicorn，避免未安装时影响模块导入）"""
         try:
             import uvicorn
@@ -459,8 +487,9 @@ class RAGWebAPI:
             self.app,
             host=host,
             port=port,
-            reload=debug,
-            log_level="info"
+            # Uvicorn reload requires an import string, not this initialized app object.
+            reload=False,
+            log_level="debug" if debug else "info"
         )
 
 def create_app(config: Config) -> FastAPI:
@@ -469,9 +498,7 @@ def create_app(config: Config) -> FastAPI:
     return rag_web.app
 
 if __name__ == "__main__":
-    # 直接运行API服务
-    from ..config.settings import Config
+    # 所有命令行入口共用 host/port/debug 参数与默认值。
+    from scripts.run_api import main
 
-    config = Config()
-    rag_web = RAGWebAPI(config)
-    rag_web.run(debug=True)
+    main()

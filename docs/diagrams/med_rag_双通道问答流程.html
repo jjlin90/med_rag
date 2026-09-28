@@ -1,6 +1,6 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>med_rag_双通道问答流程</title><style>body{margin:0;background:#f3f6fa;font-family:Microsoft YaHei,sans-serif}main{max-width:1600px;margin:auto;padding:16px}svg{width:100%;height:auto}p{line-height:1.7}</style><main><p>按当前API分支绘制，缓存和FAQ命中均提前结束。 <a href="../med_rag_学习与面试全解.md">完整代码核查与边界</a></p><svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2270" viewBox="0 0 1600 2270"><rect width="100%" height="100%" fill="#f3f6fa"/>
 <text x="60" y="78" font-family="Microsoft YaHei,sans-serif" font-size="38" font-weight="700" fill="#172f47">med_rag 双通道问答：按真实API控制流</text>
-<text x="60" y="117" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#52647a">2026-09-15校订｜快通道命中即结束；仅未命中才进入RAGSystem</text>
+<text x="60" y="117" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#52647a">2026-09-27修订｜快通道命中即结束；仅未命中才进入RAGSystem</text>
 <rect x="60" y="155" width="970" height="95" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="82" y="194" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">接收 /query 或 /chat</text>
 <text x="82" y="226" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">生成/沿用 session_id；/chat 当前问题来自最后一条user消息</text>
@@ -8,24 +8,24 @@
 <polygon points="545.0,285.0 538.8,273.6 551.2,273.6" fill="#54748e"/>
 <rect x="60" y="285" width="970" height="120" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="82" y="324" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">① 外层 query 缓存（use_cache=True且Redis可用）</text>
-<text x="82" y="356" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">key = query: + MD5(规范化问题)</text>
-<text x="82" y="383" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">未命中或关闭 → 继续FAQ</text>
+<text x="82" y="356" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">v2 key：问题 / 来源 / 策略 / 历史</text>
+<text x="82" y="383" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">未命中 → 符合条件走FAQ，否则RAG</text>
 <path d="M1030 330 L1100 330" stroke="#54748e" stroke-width="3"/>
 <polygon points="1100.0,330.0 1088.6,336.2 1088.6,323.8" fill="#54748e"/>
 <text x="1047.0" y="317" font-family="Microsoft YaHei,sans-serif" font-size="18" font-weight="400" fill="#42627d">命中</text>
 <rect x="1100" y="275" width="440" height="150" rx="15" fill="#e8f6ee" stroke="#b4c5d7" stroke-width="2"/>
 <text x="1122" y="314" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">直接返回缓存</text>
 <text x="1122" y="346" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">used_cache=True</text>
-<text x="1122" y="373" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">本轮不写MySQL会话</text>
+<text x="1122" y="373" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">本轮也写MySQL会话</text>
 <text x="1122" y="400" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">不调用意图分类/生成</text>
 <path d="M545 405 L545 455" stroke="#54748e" stroke-width="3"/>
 <polygon points="545.0,455.0 538.8,443.6 551.2,443.6" fill="#54748e"/>
 <rect x="60" y="455" width="970" height="190" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="82" y="494" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">② FAQ 快通道</text>
-<text x="82" y="526" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">先检查MySQL连接/游标对象，再读FAQ专用缓存</text>
-<text x="82" y="553" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">缓存未命中：进程内手写BM25，最多5候选做softmax</text>
+<text x="82" y="526" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">无历史/来源/策略限制：先读缓存，再查数据库</text>
+<text x="82" y="553" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">原始BM25须正分；最多5候选做softmax</text>
 <text x="82" y="580" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">最佳分≥0.85且查到答案 → 命中；否则转RAG</text>
-<text x="82" y="607" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">FAQ缓存不受外层use_cache=False控制</text>
+<text x="82" y="607" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">use_cache=False 同时关闭两层缓存</text>
 <path d="M1030 530 L1100 530" stroke="#54748e" stroke-width="3"/>
 <polygon points="1100.0,530.0 1088.6,536.2 1088.6,523.8" fill="#54748e"/>
 <text x="1047.0" y="517" font-family="Microsoft YaHei,sans-serif" font-size="18" font-weight="400" fill="#42627d">命中</text>
@@ -78,7 +78,7 @@
 <text x="1122" y="1291" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">不调用最终答案生成器</text>
 <text x="1122" y="1318" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">此前选策略/增强可能已调LLM</text>
 <text x="1122" y="1345" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">回API可写历史，不写query缓存</text>
-<text x="1122" y="1372" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">底层吞异常可能影响故障归类</text>
+<text x="1122" y="1372" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">检索 / 子查询故障升级 L2，不缓存</text>
 <path d="M545 1320 L545 1380" stroke="#54748e" stroke-width="3"/>
 <polygon points="545.0,1380.0 538.8,1368.6 551.2,1368.6" fill="#54748e"/>
 <text x="553" y="1343" font-family="Microsoft YaHei,sans-serif" font-size="18" font-weight="400" fill="#42627d">否</text>

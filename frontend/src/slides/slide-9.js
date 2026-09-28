@@ -23,11 +23,11 @@ window.slideDataMap.set(9, `
       </div>
       <div class="bg-slate-800/50 border border-indigo-500/30 rounded-xl p-5 flex flex-col">
         <div class="flex items-center gap-3 mb-2"><span class="font-mono text-2xl font-bold text-indigo-300">04</span><h3 class="text-lg font-bold text-white">检索合并</h3></div>
-        <p class="text-slate-400 text-sm leading-relaxed">Milvus 混合检索，粗排 Top8 候选。</p>
+        <p class="text-slate-400 text-sm leading-relaxed">Milvus 融合 Top16，取前5子块并回溯父块。</p>
       </div>
       <div class="bg-slate-800/50 border border-purple-500/30 rounded-xl p-5 flex flex-col">
         <div class="flex items-center gap-3 mb-2"><span class="font-mono text-2xl font-bold text-purple-300">05</span><h3 class="text-lg font-bold text-white">重排序</h3></div>
-        <p class="text-slate-400 text-sm leading-relaxed">BGE-reranker 交叉编码精排 Top4。</p>
+        <p class="text-slate-400 text-sm leading-relaxed">BGE-reranker 按子证据重排，最终最多 Top2。</p>
       </div>
       <div class="bg-slate-800/50 border border-purple-500/30 rounded-xl p-5 flex flex-col">
         <div class="flex items-center gap-3 mb-2"><span class="font-mono text-2xl font-bold text-purple-300">06</span><h3 class="text-lg font-bold text-white">生成</h3></div>

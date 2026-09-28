@@ -61,4 +61,5 @@ $keepDirs | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 Write-Host "[run_api_safe] 启动后端 API（faulthandler 已开，崩溃会显示堆栈）..." -ForegroundColor Cyan
 
 # ---- 3) 启动（faulthandler + 透传参数）----
-& (Join-Path $venvScripts 'python.exe') '-X', 'faulthandler', (Join-Path $root 'scripts\run_api.py') @args
+& (Join-Path $venvScripts 'python.exe') '-X' 'faulthandler' (Join-Path $root 'scripts\run_api.py') @args
+exit $LASTEXITCODE

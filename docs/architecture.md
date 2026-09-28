@@ -1,3 +1,34 @@
+# med_rag 当前架构与验证边界（2026-09-27）
+
+详细原理与逐题追问见 [工程修订与面试详解](20260927_工程修订与面试详解.md)，完整旧讲解仍保留在 [学习与面试全解](med_rag_学习与面试全解.md)。本文末尾保留原架构说明作为历史对照。
+
+## 当前离线链路
+
+HTML 抽取默认读取 data/raw/MSDZHConsumerMedicalTopics，输出 data/clean_md，支持输入输出参数。正式入库独立执行：文档加载→数值保留型清洗→元数据→2000/400 字符父子分块（overlap60）→JSON→BGE-M3 dense1024+sparse→Milvus。DOCX 工厂别名已修复；旧 DOC/PPT 不宣称直接支持，OCR 尚未实现。
+
+向量化失败或条数不符会停止批次并传播异常。旧 JSON 读取时按 parent_id 恢复 chunk_type；入库按父子关系写顶层类型。新 schema 的子块过滤同时检查 chunk_type 与非空 parent_id；未自动迁移磁盘历史或在线集合。
+
+## 当前在线链路
+
+1. API 校验请求；/chat 将最后 user 消息作为问题，其余为 history，timestamp 可选。
+2. query:v2 缓存包含问题、source_filter、strategy、history；保留语义标点。命中也保存会话。
+3. 无历史、来源过滤、显式策略时可进入 FAQ：允许缓存则先查 faq:v2，未命中再查 MySQL/BM25。最高原始分<=0 不命中；softmax>=0.85 仍是相对阈值。use_cache=false 关闭两层缓存读写。
+4. 深通道分类一次。general 用独立通用提示词；medical 使用四种策略。每路两向量融合最多16→前5子块→父块聚合→最佳子块证据重排→最多2条上下文。
+5. L1 放宽过滤后返回子片段。检索/向量化异常及任一子查询 error 升级 L2；重排不可用与空正文也阻止无依据生成。有依据但 LLM 失败时可返回原文摘录。level>=2 不写 query 缓存。
+6. MySQL 仅保留最近5轮，读取和裁剪按 timestamp/id 稳定排序。服务器不会按 session_id 自动恢复生成历史；客户端负责提交。
+
+## 评测、测试与剩余限制
+
+Ragas 无标准答案通常只有 F/AR；提供标准答案后可评四项。已知指标全 NaN 列保留，无有效均值为 null，fallback 解析失败同样为 null。必须同时报告 engine、metrics、valid_counts、complete_count。页面按实际字段显示，无法评分显示“未评出”。历史210题指标未在本次重新生成。
+
+回归入口：`python -m unittest discover -s tests -v`、`python scripts/test_quality_optimizations.py`、`python scripts/test_degrade_policy.py`、`python scripts/audit_static.py`。模拟外部服务的通过结果不证明实际模型或数据库健康。
+
+当前仍无认证/会话授权、多租户、SSE、答案内联证据绑定、完整多轮检索指代改写、生产并发验证。同步重计算仍可能阻塞 API；health 部分字段只检查初始化对象。source_filter 是来源匹配条件，不是访问控制。
+
+## 原架构说明（2026-09-15 历史快照，完整保留）
+
+下文描述修复前状态，其中“未修复”“当前”的时间均指2026-09-15；截至2026-09-27应以上文与修复专题为准。
+
 # med_rag 架构与运行边界
 
 > 2026-09-15按当前工作区核查。详细解释、参数、面试追问和待整改项统一见[学习与面试全解](med_rag_学习与面试全解.md)。

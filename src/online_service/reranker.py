@@ -67,10 +67,9 @@ class Reranker:
         if not documents:
             return []
 
-        # 如果模型不可用，按原顺序返回
+        # 模型不可用时抛错，由 RAGSystem 标记 L2，避免静默使用未重排结果。
         if not self.model:
-            logger.warning("Reranker model not available, returning original order")
-            return documents[:top_k]
+            raise RuntimeError('Reranker model not available')
 
         try:
             # 准备输入对：(query, doc) 二元组列表
@@ -86,6 +85,8 @@ class Reranker:
             # compute_score 对单个 pair 返回标量，对多个返回 list，统一为 list
             if not isinstance(scores, (list, tuple, np.ndarray)):
                 scores = [scores]
+            if len(scores) != len(documents) or not np.isfinite(scores).all():
+                raise ValueError('Invalid reranker scores')
 
             # 添加分数到文档
             for doc, score in zip(documents, scores):
@@ -102,7 +103,7 @@ class Reranker:
 
         except Exception as e:
             logger.error(f"Reranking failed: {str(e)}")
-            return documents[:top_k]
+            raise
 
     def rerank_with_parent_context(self, query: str, child_results: List[Dict],
                                    parent_map: Dict[str, Dict], top_k: int = 2) -> List[Dict]:

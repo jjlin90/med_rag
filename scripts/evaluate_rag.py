@@ -61,7 +61,9 @@ def print_and_save(result: Dict[str, Any], out_json: str, out_csv: str) -> None:
     print(f"  样本数 total    : {result.get('total')}")
     print(f"  含标准答案 gt   : {result.get('has_ground_truth')}")
     for k in metrics:
-        print(f"  {k:<18}: {avg.get(k, 0):.3f}")
+        value = avg.get(k)
+        formatted = f'{value:.3f}' if isinstance(value, (int, float)) else 'NA'
+        print(f"  {k:<18}: {formatted}")
     print(f"  四项完整/总数   : {result.get('complete_count', result.get('total', 0))}/{result.get('total', 0)}")
     if result.get("valid_counts"):
         print(f"  各指标有效数    : {result['valid_counts']}")
@@ -86,7 +88,7 @@ def print_and_save(result: Dict[str, Any], out_json: str, out_csv: str) -> None:
         print(f"  [{i}] {q:<44} {parts}")
 
     # 保存 JSON（逐条 + 平均分）
-    os.makedirs(os.path.dirname(out_json), exist_ok=True)
+    Path(out_json).parent.mkdir(parents=True, exist_ok=True)
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     print(f"\n完整报告已保存: {out_json}")
@@ -174,7 +176,7 @@ def run_live_eval(config: Config, items: List[Dict[str, Any]],
             # 记录降级标记：评估时被降级/拒答的样本应单独统计，
             # 否则 L2 安全拒答会拉低 faithfulness，掩盖真实检索质量问题
             degraded = bool(getattr(resp, "degraded", False))
-            degraded_reason = str(getattr(resp, "degraded_reason", "") or "")
+            degraded_reason = str(getattr(resp, "degrade_reason", "") or "")
         except Exception as e:
             print(f"    生成失败: {e}")
             answer, contexts, degraded, degraded_reason = "", [], True, f"exception:{e}"
@@ -215,8 +217,8 @@ def run_live_eval(config: Config, items: List[Dict[str, Any]],
     # 额外产出：降级/空上下文统计（不计入 Ragas，但写进报告供人工判读）
     stats = {
         "total": len(eval_items),
-        "empty_answer": sum(1 for d in new_items if not d.get("answer")),
-        "empty_context": sum(1 for d in new_items if not d.get("contexts")),
+        "empty_answer": sum(1 for d in eval_items if not d.get("answer")),
+        "empty_context": sum(1 for d in eval_items if not d.get("contexts")),
         "degraded": sum(1 for q in eval_items
                         if merged.get(q["question"], {}).get("degraded")),
         "avg_contexts": round(

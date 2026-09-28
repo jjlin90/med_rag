@@ -100,8 +100,8 @@ class StrategySelector:
             return STRATEGY_NAME_MAP[cleaned]
 
         # 直接匹配英文
-        for s in VALID_STRATEGIES:
-            if s in cleaned or cleaned in s:
+        for s in sorted(VALID_STRATEGIES):
+            if cleaned and s in cleaned:
                 return s
 
         # 兜底

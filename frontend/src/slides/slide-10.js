@@ -23,7 +23,7 @@ window.slideDataMap.set(10, `
         <div class="space-y-4 flex-1">
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-indigo-400">
             <p class="text-white font-semibold mb-1">BGE-reranker 精排</p>
-            <p class="text-slate-400 text-sm">CrossEncoder 对 Top8 候选做精细相关性打分，输出 Top4。</p>
+            <p class="text-slate-400 text-sm">融合 Top16→前5子块回溯父块→代表子块精排，最多输出 Top2。</p>
           </div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-indigo-400">
             <p class="text-white font-semibold mb-1">混合检索</p>

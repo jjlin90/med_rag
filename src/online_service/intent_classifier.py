@@ -30,7 +30,7 @@ class IntentClassifier:
         self.labels = {0: 'general', 1: 'medical'}  # 通用知识，医疗咨询
         self.label_names = ['general', 'medical']
 
-        # 模型路径（实际目录为 bert_query_classifier_bak，若无训练好的权重则回退到 bert-base-chinese）
+        # 优先加载正式训练目录，其次备份；缺少分类权重时明确失败，不使用随机分类头。
         self.model_dir = config.BASE_DIR / "src/models/bert_query_classifier"
         # 若目标目录不存在但存在 _bak 备份目录，则使用备份目录
         if not self.model_dir.exists():
@@ -60,12 +60,10 @@ class IntentClassifier:
                 logger.info("Loading pre-trained BERT model...")
                 self.model = BertForSequenceClassification.from_pretrained(str(self.model_dir))
             else:
-                # 回退到本地 bert-base-chinese，避免联网下载
-                local_bert = self.config.BASE_DIR / "src/models/bert-base-chinese"
-                logger.info(f"Creating new BERT model from local: {local_bert}")
-                self.model = BertForSequenceClassification.from_pretrained(
-                    str(local_bert),
-                    num_labels=len(self.labels)
+                raise RuntimeError(
+                    'Trained intent classifier weights are missing; '
+                    'run scripts/train_intent.py before serving requests. '
+                    'An untrained classification head must not route medical queries.'
                 )
 
             # 移动到设备

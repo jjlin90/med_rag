@@ -17,7 +17,8 @@ python scripts/run_api.py
 2. 再启动前端（另开终端，在项目根目录）：
 
 ```bash
-web_demo/.venv/Scripts/python.exe -m streamlit run web_demo/app.py
+uv sync --extra demo
+.venv/Scripts/python.exe -m streamlit run web_demo/app.py
 ```
 
 默认打开：`http://localhost:8501`
@@ -30,7 +31,7 @@ web_demo/.venv/Scripts/python.exe -m streamlit run web_demo/app.py
 - 系统统计面板
 - 引用来源折叠展示
 - 检索策略、来源过滤、缓存开关
-- **RAG 评估** Tab（对接 `POST /evaluate`，Ragas 四项指标）
+- **RAG 评估** Tab（对接 `POST /evaluate`，按返回的 metrics 展示；本页面不提供标准答案，正常 Ragas 路径为 F/AR 两项）
 
 ## 配置
 

@@ -1,10 +1,10 @@
 # Small-to-Big 缺陷与当前状态
 
-> 首次修复记录来自 2026-08-29；本页在 2026-09-10 重新按当前代码和运行状态核验。历史实测不能冒充当前在线验证。
+> 首次修复记录来自 2026-08-29，运行记录截至 2026-09-10；2026-09-28 按当前实现修订过滤、类型恢复与降级说明，未重测在线服务。当前完整流程见 [架构说明](../architecture.md)，修复与回归依据见 [工程修订与面试详解](../20260927_工程修订与面试详解.md)。
 
 ## 1. 原始缺陷
 
-旧实现先让父块与子块共同占用 Milvus Top-K，再在 Python 中按 `parent_id` 过滤；父块会浪费召回槽位。更严重的是，无子块时旧分支支会直接返回父块，使 Small-to-Big 静默失效。
+旧实现先让父块与子块共同占用 Milvus Top-K，再在 Python 中按 `parent_id` 过滤；父块会浪费召回槽位。更严重的是，无子块时旧分支会直接返回父块，使 Small-to-Big 静默失效。
 
 相关旧缺陷包括：
 
@@ -21,13 +21,13 @@
 - `chunk_splitter.py` 显式写入父/子 `chunk_type`。
 - `embedding_provider.py` 透传 `parent_id`、`parent_content` 和 `chunk_type`。
 - `milvus_store.py` 的新 Schema 有顶层 `chunk_type`。
-- 新 Schema 子块表达式为 `chunk_type == "child"`；旧 Schema 回退 `parent_id != ""`。
+- 新 Schema 联合检查 `chunk_type == "child"` 与 `parent_id != ""`；旧 Schema 回退 `parent_id != ""`，避免误标父块占用子块召回槽位。
 - 来源过滤与子块过滤由 `combine_expr()` 加括号组合。
-- 正常路径先取 Top-16 子块，再截 Top-5，然后回溯父块；最佳子块进入 `rerank_content`，最终返回 Top-2 父块。
+- 正常单次检索最多召回 16 个子块，再截前 5 个回溯父块；代表子块进入 `rerank_content`，最终重排保留最多 2 条上下文。父正文缺失时可回退子正文；多子查询分别召回后合并再统一重排。
 - L0 无结果时进入 L1；L1 放开过滤，父块命中后在内存切为子块。L1 不返回完整父块。
-- 仍无结果或基础设施错误时进入 L2，无证据拒答且不调用 LLM。
+- 仍无结果时进入 L2，默认关闭无上下文生成，返回固定拒答；检索、重排等故障也返回 L2，API 不缓存。这里“不调用 LLM”仅指默认拒答分支不调用最终答案生成器，此前策略选择或查询增强仍可能调用 LLM。
 
-## 3. 当前本地数据风险
+## 3. 存量数据与迁移边界
 
 `data/split_docs/docs.json` 有 20,816 条记录。按 `parent_id` 统计：
 
@@ -37,11 +37,11 @@
 | 逻辑父块 | 3,936 |
 | 子块/父块 | 4.29 |
 
-但该 JSON 顶层 `chunk_type` 全部为 child。若直接把它写入带新字段的 Schema，逻辑父块会被错误标成 child。因此重建新集合前必须先用当前 `ChunkSplitter` 重新生成分块并重新向量化。
+存量 JSON 的顶层 `chunk_type` 全部为 child，与逻辑父子关系不一致。当前 `ChunkSplitter.load_chunks` 和 `MilvusStore.add_documents` 均按 `parent_id` 推导类型，会纠正已有但错误的标签；绕过这些处理直接写原标签仍可能引入错误。
 
-`BGEEmbeddingProvider.batch_process` 的 fallback 会优先读取对象属性；当前代码新生成的 `Chunk` 对象类型正确，但旧 JSON 不能因此自动修复。
+代码不会自动改写磁盘 JSON 或迁移已有 collection。迁移应核验父子关联、类型与向量记录；可通过当前加载/入库流程恢复类型，也可重新分块并向量化，不能把“已有代码修复”等同于“存量库已迁移”。
 
-## 4. 当前验证结果
+## 4. 历史运行记录（2026-09-10）
 
 2026-09-10 运行：
 
@@ -49,7 +49,7 @@
 .venv\Scripts\python.exe scripts\check_chunk_type_filter.py
 ```
 
-结果是在初始化阶段无法连接 `localhost:19530`，报 Milvus server unavailable。故本次只能确认代码与本地 JSON，不能确认当前在线 collection 的字段、实体数或过滤结果。
+当时在初始化阶段无法连接 `localhost:19530`，报 Milvus server unavailable。这是当时的连接结果，不能据此判断今天在线 collection 的字段、实体数或过滤结果。
 
 同时：
 
@@ -64,7 +64,7 @@
 
 ## 6. 下一次上线前验证
 
-1. 用当前分块器重建 `docs.json`，确认逻辑父块顶层 `chunk_type=parent`。
+1. 用当前加载器恢复类型并核验父子关联，或重新分块生成 `docs.json`，确认逻辑父块类型为 parent。
 2. 重建或迁移 Milvus collection。
 3. 运行 `scripts/check_chunk_type_filter.py` 检查 Schema 和父子数量。
 4. 再运行 `--with-search`，确认两路 ANN 都应用子块过滤。
@@ -72,4 +72,4 @@
 
 ## 7. 面试准确话术
 
-> 旧实现把子块过滤放在 Milvus 召回之后，父块可能先占用 Top-K；我把父子类型提升为顶层标量字段，并在 dense/sparse 两路请求中下推过滤。为了兼容旧 Schema，代码可回退到 `parent_id != ""`。当前本地旧分块 JSON 的顶层类型仍不可信，所以重建新集合前必须重新分块。本次复核时 Milvus 未启动，代码与 mock 测试通过，但在线过滤仍需启动服务后复验。
+> 旧实现把子块过滤放在 Milvus 召回之后，父块可能先占用 Top-K；我把父子类型提升为顶层标量字段，在 dense/sparse 两路联合检查类型与父 ID，并兼容旧 Schema。旧分块在加载和入库时按父子关系恢复类型，检索或重排故障显式标记 L2 并阻止缓存。存量数据迁移及真实 Milvus 过滤效果需要独立验证。

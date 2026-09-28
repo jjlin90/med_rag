@@ -105,7 +105,7 @@ ${slideContents.map(s => s.content).join('\n')}
   const tempTailwindConfig = path.join(tempDir, 'tailwind.config.js');
   fs.writeFileSync(tempTailwindConfig, `
 export default {
-  content: ['${tempHtmlPath}'],
+  content: [${JSON.stringify(tempHtmlPath.replace(/\\/g, '/'))}],
   theme: {
     extend: {},
   },

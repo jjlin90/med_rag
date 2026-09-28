@@ -169,6 +169,8 @@ class RAGEvaluator:
         返回结构：{engine, total, metrics, has_ground_truth, average, scores}
         """
         norm = self._normalize(items)
+        if not norm:
+            raise ValueError('Evaluation items cannot be empty')
         if self._ragas:
             try:
                 return self._evaluate_ragas(norm, show_progress=show_progress)
@@ -257,7 +259,7 @@ class RAGEvaluator:
             vals = [r[k] for r in scores
                      if isinstance(r[k], (int, float)) and math.isfinite(r[k])]
             valid_counts[k] = len(vals)
-            avg[k] = round(sum(vals) / len(vals), 4) if vals else 0.0
+            avg[k] = round(sum(vals) / len(vals), 4) if vals else None
 
         complete_count = sum(
             1 for r in scores
@@ -295,7 +297,9 @@ class RAGEvaluator:
             if c in RAGAS_NON_METRIC_COLS:
                 continue
             vals = df[c].dropna().tolist()
-            if vals and all(isinstance(v, (int, float)) for v in vals):
+            if c in {'faithfulness', 'answer_relevancy', 'context_precision', 'context_recall'}:
+                metric_keys.append(c)
+            elif vals and all(isinstance(v, (int, float)) for v in vals):
                 metric_keys.append(c)
 
         rows = df[metric_keys].to_dict(orient="records") if metric_keys else []
@@ -311,11 +315,15 @@ class RAGEvaluator:
             scores.append({"question": it["question"], **res})
 
         avg = self._aggregate(scores)
+        metrics = ['faithfulness', 'context_precision', 'answer_relevancy']
+        valid_counts = {key: sum(row.get(key) is not None for row in scores) for key in metrics}
         return {
             "engine": "llm_judge_fallback",
             "total": len(items),
             "metrics": ["faithfulness", "context_precision", "answer_relevancy"],
             "average": avg,
+            "valid_counts": valid_counts,
+            "complete_count": sum(all(row.get(k) is not None for k in metrics) for row in scores),
             "scores": scores,
         }
 
@@ -374,9 +382,10 @@ class RAGEvaluator:
 
             def to_score(v):
                 try:
-                    return max(0.0, min(1.0, float(v)))
+                    value = float(v)
+                    return value if math.isfinite(value) and 0 <= value <= 1 else None
                 except (TypeError, ValueError):
-                    return 0.0
+                    return None
 
             return {
                 "faithfulness": to_score(data.get("faithfulness")),
@@ -386,17 +395,14 @@ class RAGEvaluator:
             }
         except Exception as e:
             logger.warning(f"降级评估 JSON 解析失败: {e}")
-            return {"faithfulness": 0.0, "context_precision": 0.0,
-                    "answer_relevancy": 0.0, "rationale": "解析失败"}
+            return {"faithfulness": None, "context_precision": None,
+                    "answer_relevancy": None, "rationale": "解析失败"}
 
     @staticmethod
     def _aggregate(scores: List[Dict[str, Any]]) -> Dict[str, float]:
-        if not scores:
-            return {"faithfulness": 0.0, "context_precision": 0.0,
-                    "answer_relevancy": 0.0}
-        n = len(scores)
-        return {
-            "faithfulness": round(sum(s["faithfulness"] for s in scores) / n, 4),
-            "context_precision": round(sum(s["context_precision"] for s in scores) / n, 4),
-            "answer_relevancy": round(sum(s["answer_relevancy"] for s in scores) / n, 4),
-        }
+        result = {}
+        for key in ('faithfulness', 'context_precision', 'answer_relevancy'):
+            values = [row.get(key) for row in scores
+                      if isinstance(row.get(key), (int, float)) and math.isfinite(row[key])]
+            result[key] = round(sum(values) / len(values), 4) if values else None
+        return result

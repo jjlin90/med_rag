@@ -101,7 +101,7 @@ class ConversationStore:
                 SELECT question, answer
                 FROM conversations
                 WHERE session_id = %s
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, id DESC
                 LIMIT %s
             """, (session_id, MAX_HISTORY_TURNS))
 
@@ -142,7 +142,7 @@ class ConversationStore:
                     SELECT id FROM (
                         SELECT id FROM conversations
                         WHERE session_id = %s
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         LIMIT %s
                     ) AS keep
                   )

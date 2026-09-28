@@ -22,7 +22,7 @@ window.slideDataMap.set(8, `
       <div class="relative bg-slate-800/50 border border-purple-500/30 rounded-xl p-6 flex flex-col">
         <div class="w-12 h-12 rounded-full bg-purple-500/20 border border-purple-400/50 flex items-center justify-center font-mono text-xl font-bold text-purple-300 mb-4">3</div>
         <h3 class="text-lg font-bold text-white mb-2">向量化</h3>
-        <p class="text-slate-400 text-sm leading-relaxed flex-1">BGE-M3 生成 <span class="text-purple-300 font-semibold">稠密 + 稀疏 + 多向量</span>，多粒度表达能力更强。</p>
+        <p class="text-slate-400 text-sm leading-relaxed flex-1">BGE-M3 生成 <span class="text-purple-300 font-semibold">稠密 + 稀疏（关闭ColBERT）</span>，多粒度表达能力更强。</p>
       </div>
       <div class="relative bg-slate-800/50 border border-cyan-500/30 rounded-xl p-6 flex flex-col">
         <div class="w-12 h-12 rounded-full bg-cyan-500/20 border border-cyan-400/50 flex items-center justify-center font-mono text-xl font-bold text-cyan-300 mb-4">4</div>

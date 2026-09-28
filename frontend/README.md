@@ -33,6 +33,6 @@ npm run build
 npm run preview
 ```
 
-`npm run build` 在 `package.json` 中显式指定 `--outDir ../artifacts`，因此产物写到项目根目录的 `artifacts/`，不是 `frontend/dist/`。`build:slides` 使用 `rm -rf`，在未提供 `rm` 的原生 Windows shell 中可能无法直接运行。
+`npm run build` 写入 `frontend/dist/`，避免与项目文档、PPT 等共用 artifacts。`npm run build:slides` 直接运行 Node 脚本，已去除依赖 Unix rm 命令的前置步骤；输出 dist-slides。旧 build:export-pptx 引用了仓库不存在的 .codebuddy 导出器，已删除该无效命令；原有 PPT 文件保留。
 
 本文只陈述仓库代码和配置可证明的内容；浏览器版本范围、线上部署状态、许可证和性能均未由本仓库验证。

@@ -1,13 +1,8 @@
 """
 启动在线问答 API 服务
 
-为什么不能直接 `python src/online_service/main_api.py`：
-    main_api.py 内部使用相对导入（from ..config.settings import Config），
-    直接以脚本方式运行会失去包上下文，报
-    "attempted relative import with no known parent package"。
-本脚本先把项目根目录加入 sys.path，再以「包内模块」方式导入并启动，等效于
-    python -m src.online_service.main_api
-但更直观、且能复用统一的启动参数。
+本脚本是统一启动入口。main_api.py 的文件入口和模块入口也委托给本脚本，
+共用 host/port/debug 参数，默认端口 8005。
 
 用法（在项目根目录）：
     python scripts/run_api.py
@@ -29,9 +24,6 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.config.settings import Config  # noqa: E402
-from src.online_service.main_api import RAGWebAPI  # noqa: E402
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -42,8 +34,12 @@ def main():
     parser = argparse.ArgumentParser(description="启动医疗 RAG 问答 API 服务")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址")
     parser.add_argument("--port", type=int, default=8005, help="监听端口")
-    parser.add_argument("--debug", action="store_true", help="开启热重载调试模式")
+    parser.add_argument("--debug", action="store_true", help="开启调试日志（不启用热重载）")
     args = parser.parse_args()
+
+    # --help 不需要加载模型依赖或连接外部服务。
+    from src.config.settings import Config
+    from src.online_service.main_api import RAGWebAPI
 
     logger.info("初始化配置...")
     config = Config()

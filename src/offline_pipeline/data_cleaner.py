@@ -26,8 +26,7 @@ class DataCleaner:
             r'第\s*\d+\s*页',
             r'-\s*\d+\s*-',
             r'Page\s*\d+',
-            r'page\s*\d+',
-            r'\d+\s*/\s*\d+'
+            r'page\s*\d+'
         ]
 
     def clean_documents(self, documents: List[Document]) -> List[Document]:
@@ -119,7 +118,7 @@ class DataCleaner:
     def _is_page_number(self, line: str) -> bool:
         """判断是否为页码"""
         for pattern in self.page_number_patterns:
-            if re.search(pattern, line):
+            if re.fullmatch(pattern, line):
                 return True
         return False
 
@@ -127,7 +126,7 @@ class DataCleaner:
         """判断是否为高频短行（页眉页脚）"""
         # 过滤掉太短的行
         if len(line) < self.min_line_length:
-            return True
+            return False
 
         # 统计相同行出现的次数
         count = 0
@@ -144,7 +143,7 @@ class DataCleaner:
         clean_line = re.sub(r'\s+', '', line)
 
         # 如果不含中文字符和英文字符，认为是纯符号
-        if not re.search(r'[一-鿿a-zA-Z]', clean_line):
+        if not any(char.isalnum() for char in clean_line):
             return True
 
         return False

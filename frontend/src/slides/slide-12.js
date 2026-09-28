@@ -24,8 +24,8 @@ window.slideDataMap.set(12, `
         <h3 class="text-lg font-bold text-indigo-300 mb-4">关键设计</h3>
         <div class="space-y-3 flex-1">
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400"><p class="text-white font-semibold">意图分类</p><p class="text-slate-400 text-sm">bert-base-chinese 微调，输出 general/medical 及置信度。</p></div>
-          <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400"><p class="text-white font-semibold">路由规则</p><p class="text-slate-400 text-sm">医疗问题跳过 FAQ 直走 RAG，保证权威出处。</p></div>
-          <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-emerald-400"><p class="text-emerald-300 font-semibold">FAQ 守卫</p><p class="text-slate-400 text-sm">查询须与 FAQ 共享有效关键词，否则回退 RAG → 杜绝"头痛"误命中"声带息肉"（已修复）。</p></div>
+          <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400"><p class="text-white font-semibold">路由规则</p><p class="text-slate-400 text-sm">无历史/来源/策略限制先走FAQ；未命中再分类并进入RAG。</p></div>
+          <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-emerald-400"><p class="text-emerald-300 font-semibold">FAQ 守卫</p><p class="text-slate-400 text-sm">原始BM25为零则回退RAG；正分仍需通过0.85相对阈值，并非正确率保证。</p></div>
         </div>
       </div>
     </div>

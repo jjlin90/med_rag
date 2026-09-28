@@ -99,3 +99,12 @@ docs/_build/
 
 # ===================== 工具自身数据（非项目代码） =====================
 .workbuddy/
+
+# JavaScript dependencies and local build output
+node_modules/
+frontend/dist-slides/
+
+# 本地浏览器会话与个人资料，不属于可分发项目资产
+artifacts/**/chrome_profile/
+artifacts/个人背景信息*.docx
+artifacts/个人背调信息*.docx

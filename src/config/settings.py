@@ -51,7 +51,7 @@ class Config:
 
         # 检索阶段参数
         self.TOP_K_RETRIEVE = 16       # 混合检索召回量（粗排，取多一点给精排留余地）
-        self.TOP_K_CHILDREN = 5        # Small-to-Big：子块召回数（300字粒度，精细定位）
+        self.TOP_K_CHILDREN = 5        # Small-to-Big：子块召回数（400字粒度，精细定位）
         self.TOP_K_RERANK = 2          # CrossEncoder 精排最终输出数（EduRag: Top-2 父块）
 
         # FAQ 快通道参数（对齐 EduRag：softmax 归一化后阈值）
@@ -79,11 +79,11 @@ class Config:
         # ===================== 设备全局配置 =====================
         # 不能静默降级：Windows 上 `uv sync` 极易把 GPU 版 torch 覆盖成 CPU 版
         # （pip/uv 默认源的 Windows wheel 是 CPU-only），此时 torch.cuda.is_available()
-        # 返回 False，系统继续跑、不报错，只是慢一个数量级——不显式告警根本发现不了。
+        # 返回 False 时仍可使用 CPU；性能差异应由实际模型与硬件测试确认。
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         if self.DEVICE == "cpu":
             logger.warning(
-                "torch 未检测到 CUDA，已降级为 CPU 推理（BGE-M3 embedding 与重排会慢一个数量级）。"
+                "torch 未检测到 CUDA，使用 CPU 推理（实际耗时需在当前硬件上测量）。"
                 "常见原因：Windows 下被 pip/uv 默认源的 CPU 版 torch 覆盖。"
                 "修复见 pyproject.toml 的 [tool.uv.sources] torch 索引配置，"
                 "然后执行 uv sync 重装 GPU 版。"
@@ -113,11 +113,10 @@ class Config:
         self.MILVUS_NPROBE = 16
 
         # ===================== LLM生成参数 =====================
-        # DashScope 兼容模式可用模型：qwen-turbo / qwen-plus / qwen-max 等。
-        # 模型名优先读环境变量 LLM_MODEL_NAME（便于额度耗尽时临时切换，如切 qwen-plus / qwen-max），
-        # 缺省回退 qwen-plus。"qwen2" 已不可识别，会报 404 model_not_found。
+        # 模型名优先读取 LLM_MODEL_NAME；缺省 qwen-plus 与 .env.example 一致。
+        # 模型名称必须与 LLM_BASE_URL 所指供应商匹配。
         # 注意：模型在进程初始化时加载，切换后必须重启进程才生效。
-        self.LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-v4-flash")
+        self.LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "qwen-plus")
         self.LLM_TEMPERATURE = 0.2
         self.LLM_MAX_TOKENS = 1024
         # grounding 硬约束（默认开启）：生成阶段强制"只基于检索上下文作答、不足即拒答"，

@@ -129,7 +129,8 @@ def run_one_chunk(chunk_items: list, model: str, chunk_idx: int,
     out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2),
                         encoding="utf-8")
     avg = result.get("average", {})
-    scores_str = " / ".join(f"{k}={avg.get(k, 0):.3f}" for k in METRICS if k in avg)
+    scores_str = " / ".join(f"{k}={avg[k]:.3f}" if isinstance(avg.get(k), (int, float))
+                              else f"{k}=NA" for k in METRICS if k in avg)
     print(f"\n  [{model}] 完成！耗时 {elapsed:.0f}s | {scores_str}")
     print(f"  结果已存: {out_path}")
     return result
@@ -145,6 +146,9 @@ def merge_results(results: list[dict]) -> dict:
     """
     all_scores = []
     meta_list = []
+    if results and any((r.get('engine'), r.get('metrics')) !=
+                       (results[0].get('engine'), results[0].get('metrics')) for r in results):
+        raise ValueError('Cannot merge reports with different engines or metric sets')
     for r in results:
         all_scores.extend(r.get("scores", []))
         meta_list.append(r.get("_meta", {}))

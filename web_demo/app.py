@@ -345,9 +345,9 @@ if page == "智能问答":
 
 # ===================== RAG 评估 =====================
 else:
-    st.title("📊 RAG 评估（LLM-as-judge）")
+    st.title("📊 RAG 评估")
     st.caption("对一批问题调用真实 RAG 管线生成答案，再用大模型裁判打分："
-               "忠实度 / 上下文相关性 / 答案相关性（0~1）。")
+               "无标准答案时 Ragas 评估忠实度与答案相关性；结果会标明评估引擎与有效条数。")
 
     st.info("评估会依次对每题调用后端 /query 生成答案与上下文，"
             "再调用 /evaluate 打分。请耐心等待（耗时取决于问题数量与 LLM 速度）。")
@@ -376,7 +376,7 @@ else:
             for i, q in enumerate(questions, 1):
                 try:
                     r = query_api(
-                        st.session_state["api_url"], q, "", True, SESSION_ID)
+                        st.session_state["api_url"], q, "", False, SESSION_ID)
                     contexts = [s.get("content", "")
                                 for s in (r.get("sources") or [])]
                     items.append({
@@ -396,20 +396,25 @@ else:
                 avg = result.get("average", {})
 
                 st.subheader("📈 平均得分（0~1）")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("忠实度 faithfulness", f"{avg.get('faithfulness', 0):.3f}")
-                c2.metric("上下文相关性", f"{avg.get('context_relevance', 0):.3f}")
-                c3.metric("答案相关性", f"{avg.get('answer_relevance', 0):.3f}")
-                st.caption(f"成功评估 {result.get('success', 0)}/"
-                           f"{result.get('total', 0)} 条")
+                metrics = result.get('metrics') or list(avg)
+                labels = {'faithfulness': '忠实度', 'context_precision': '上下文精确度',
+                          'answer_relevancy': '答案相关性', 'context_recall': '上下文召回率'}
+                columns = st.columns(max(1, len(metrics)))
+                for column, metric in zip(columns, metrics):
+                    value = avg.get(metric)
+                    column.metric(labels.get(metric, metric),
+                                  f'{value:.3f}' if isinstance(value, (int, float)) else '未评出')
+                st.caption(f"引擎：{result.get('engine', 'unknown')}；完整评估 "
+                           f"{result.get('complete_count', 0)}/{result.get('total', 0)} 条；"
+                           f"各指标有效数：{result.get('valid_counts', {})}")
 
                 with st.expander("🔍 逐条明细", expanded=True):
                     for s in result.get("scores", []):
                         st.markdown(f"**Q：{s.get('question', '')}**")
-                        st.markdown(
-                            f"- 忠实度：`{s.get('faithfulness', 0):.2f}` "
-                            f"- 上下文相关性：`{s.get('context_relevance', 0):.2f}` "
-                            f"- 答案相关性：`{s.get('answer_relevance', 0):.2f}`")
+                        for metric in metrics:
+                            value = s.get(metric)
+                            display_value = f'{value:.2f}' if isinstance(value, (int, float)) else '未评出'
+                            st.markdown(f"- {labels.get(metric, metric)}：`{display_value}`")
                         if s.get("rationale"):
                             st.caption(f"理由：{s['rationale']}")
                         st.divider()

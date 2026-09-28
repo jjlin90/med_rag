@@ -45,7 +45,8 @@ METRICS = ["faithfulness", "answer_relevancy", "context_precision", "context_rec
 
 
 def is_valid(score_row: dict) -> bool:
-    return any((score_row.get(k) or 0) > 0 for k in METRICS)
+    return all(isinstance(score_row.get(k), (int, float))
+               and math.isfinite(score_row[k]) and 0 <= score_row[k] <= 1 for k in METRICS)
 
 
 def load_collected(chunks_dir: Path) -> dict:
@@ -57,6 +58,8 @@ def load_collected(chunks_dir: Path) -> dict:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
+            continue
+        if data.get('engine') != 'ragas':
             continue
         for row in data.get("scores", []):
             q = row.get("question")
@@ -216,9 +219,6 @@ def main():
         if not (args.model and args.questions_file and args.out):
             print("worker 模式需要 --model --questions-file --out")
             sys.exit(1)
-        if args.answers:
-            global ANSWERS_PATH
-            ANSWERS_PATH = Path(args.answers)
         questions = json.loads(Path(args.questions_file).read_text(encoding="utf-8"))
         run_worker(args.model, questions, Path(args.out))
         return

@@ -115,7 +115,7 @@ class BGEEmbeddingProvider:
                 sparse_dict = {}
                 for idx, weight in sparse_vec.items():
                     if weight > 0:  # 只保留非零权重
-                        sparse_dict[idx] = weight
+                        sparse_dict[int(idx)] = float(weight)
                 sparse_embeddings.append(sparse_dict)
 
             logger.info(
@@ -126,7 +126,7 @@ class BGEEmbeddingProvider:
 
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {str(e)}")
-            return np.array([]), []
+            raise
 
     def compute_hash(self, text: str) -> str:
         """计算文本的MD5哈希值作为ID"""
@@ -190,6 +190,8 @@ class BGEEmbeddingProvider:
             try:
                 # 生成向量
                 dense_vecs, sparse_vecs = self.generate_embeddings(batch_texts)
+                if len(dense_vecs) != len(batch_chunks) or len(sparse_vecs) != len(batch_chunks):
+                    raise ValueError('Embedding count does not match input chunks')
 
                 # 组合结果
                 for j, (chunk, dense_vec, sparse_vec) in enumerate(
@@ -230,7 +232,7 @@ class BGEEmbeddingProvider:
             except Exception as e:
                 logger.error(
                     f"Error processing batch {i//batch_size + 1}: {str(e)}")
-                continue
+                raise
             finally:
                 # 每批结束后释放 PyTorch 缓存的显存。因文本长短不一，
                 # 否则 reserved 显存会持续爬升直至顶到 8G 上限，

@@ -66,11 +66,9 @@ VERIFIED_MODELS = [
 
 
 def is_valid(score_row: dict) -> bool:
-    """判定一条样本是否拿到了有效分（非全零）。
-
-    全零 = 解析失败 / 鉴权失败 / 额度耗尽，不是真实低分，必须剔除。
-    """
-    return any((score_row.get(k) or 0) > 0 for k in METRICS)
+    """四项均为有限的 0~1 分数才完整；真实零分保留，缺失项需补评。"""
+    return all(isinstance(score_row.get(k), (int, float))
+               and math.isfinite(score_row[k]) and 0 <= score_row[k] <= 1 for k in METRICS)
 
 
 def load_collected(chunks_dir: Path) -> dict:
@@ -82,6 +80,8 @@ def load_collected(chunks_dir: Path) -> dict:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
+            continue
+        if data.get('engine') != 'ragas':
             continue
         for row in data.get("scores", []):
             q = row.get("question")

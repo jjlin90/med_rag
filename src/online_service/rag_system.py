@@ -94,7 +94,8 @@ class RAGSystem:
         if intent == "general":
             logger.info("通用知识查询，直接调用 LLM")
             answer = self.llm_generator.generate_with_context(
-                query, context="", history=history
+                query, context="", history=history,
+                system_prompt='你是一个通用知识助手。回答用户的一般问题；无法确认时说明不确定性。不要提供个体化医疗诊断或治疗方案。',
             )
             return {
                 "answer": answer or "抱歉，无法生成回答。",
@@ -102,6 +103,9 @@ class RAGSystem:
                 "strategy": strategy or "direct",
                 "sources": [],
                 "confidence": confidence,
+                "degraded": not bool(answer),
+                "degrade_level": DEGRADE_L2 if not answer else DEGRADE_OK,
+                "degrade_reason": "llm_unavailable" if not answer else "",
             }
 
         # 3. 专业咨询：大模型自动选择检索策略（外部指定时优先使用）
@@ -124,8 +128,8 @@ class RAGSystem:
         #     这是医疗场景的红线 —— 没有检索依据却让 LLM 作答，等同于
         #     用模型参数知识编造医疗建议，且输出语气与有据可依时一样权威，
         #     用户无从分辨。宁可少答，不可错答。
-        if retrieval_result.degrade_level >= DEGRADE_L2 and not retrieval_result.is_usable:
-            if not getattr(self.config, 'ALLOW_LLM_WHEN_NO_CONTEXT', False):
+        if not retrieval_result.is_usable:
+            if retrieval_result.error or not getattr(self.config, 'ALLOW_LLM_WHEN_NO_CONTEXT', False):
                 answer = (SERVICE_UNAVAILABLE_ANSWER if retrieval_result.error
                           else NO_CONTEXT_ANSWER)
                 logger.warning(
@@ -144,9 +148,24 @@ class RAGSystem:
                 }
 
         # 5. 重排序（BGE-reranker CrossEncoder 精排，对齐 EduRag "Reranker 精排 Top-2"）
-        reranked_results = self.reranker.rerank(
-            query, retrieval_result.documents, top_k=self.config.TOP_K_RERANK
-        )
+        try:
+            reranked_results = self.reranker.rerank(
+                query, retrieval_result.documents, top_k=self.config.TOP_K_RERANK
+            )
+        except Exception:
+            logger.exception('Reranking unavailable')
+            return {
+                'answer': SERVICE_UNAVAILABLE_ANSWER, 'intent': intent, 'strategy': strategy,
+                'sources': [], 'confidence': 0.0, 'degraded': True,
+                'degrade_level': DEGRADE_L2, 'degrade_reason': 'reranker_unavailable',
+            }
+        reranked_results = [doc for doc in reranked_results if (doc.get('content') or '').strip()]
+        if not reranked_results and not getattr(self.config, 'ALLOW_LLM_WHEN_NO_CONTEXT', False):
+            return {
+                'answer': NO_CONTEXT_ANSWER, 'intent': intent, 'strategy': strategy,
+                'sources': [], 'confidence': 0.0, 'degraded': True,
+                'degrade_level': DEGRADE_L2, 'degrade_reason': 'no_context_after_rerank',
+            }
 
         # 6. 构建上下文
         context = self._build_context(reranked_results)
@@ -259,10 +278,10 @@ class RAGSystem:
         """
         合并多路检索结果（子查询策略），并正确传播降级水位。
 
-        水位规则（多路场景下不能简单取 max，否则过于悲观）：
-          - 合并后有文档 → 取「有产出的那些路」中最好的水位。
-            例如两路子查询，一路 L0 命中、一路 L2 空，合并结果应算 L0——
-            毕竟确实拿到了正常粒度的依据。
+        水位规则：
+          - 任一路出现 error → 整体 L2，禁止把部分服务故障掩盖为正常结果。
+          - 无 error 且合并后有文档 → 取有产出分支的最高水位。
+            某路正常空召回可忽略，但 L1 产出不能被另一条 L0 隐藏。
           - 合并后无文档 → 取最严重的水位（无召回 / 故障）。
         """
         best_by_id: Dict[str, Dict] = {}
@@ -278,7 +297,7 @@ class RAGSystem:
 
         if documents:
             productive = [r for r in results if r.documents]
-            level = min(r.degrade_level for r in productive)
+            level = max(r.degrade_level for r in productive)
             reason = next(
                 (r.degrade_reason for r in productive if r.degrade_level == level), ""
             )
@@ -290,6 +309,9 @@ class RAGSystem:
 
         # 任意一路出现基础设施故障都要透传，不能因为有其他路成功就吞掉
         error = next((r.error for r in results if r.error), None)
+        if error:
+            level = DEGRADE_L2
+            reason = 'retrieval_error'
 
         return RetrievalResult(
             documents=documents,

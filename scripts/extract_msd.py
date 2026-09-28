@@ -2,17 +2,14 @@ from pathlib import Path
 import json
 from bs4 import BeautifulSoup
 import re
+import argparse
 
 # =====================【核对路径！】=====================
-ROOT_DIR = Path(
-    r"D:\pythonProject\test_python\MSD-Manual-Portable-main\MSDZHConsumerMedicalTopics"
-)
-OUTPUT_MD_DIR = Path(
-    r"D:\pythonProject\test_python\MSD-Manual-Portable-main\msd_consumer_output"
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ROOT_DIR = PROJECT_ROOT / 'data/raw/MSDZHConsumerMedicalTopics'
+OUTPUT_MD_DIR = PROJECT_ROOT / 'data/clean_md'
 # =======================================================
 JSON_FOLDER = ROOT_DIR / "Json"
-OUTPUT_MD_DIR.mkdir(exist_ok=True)
 
 
 def build_uuid_title_mapping():
@@ -94,14 +91,14 @@ def clean_msd_html(html_content: str) -> str:
         # 过滤垃圾行：作者、医院、版本、纯数字日期、重复主标题
         filter_words = [
             "MD", "Medical College", "Cedars-Sinai",
-            "New York Medical College", "12月 2025", "v", "1 型糖尿病 (DM)"
+            "New York Medical College", "12月 2025", "1 型糖尿病 (DM)"
         ]
         skip_line = False
         for kw in filter_words:
-            if kw in strip_line:
+            if kw == strip_line:
                 skip_line = True
                 break
-        if skip_line or len(strip_line) < 2:
+        if skip_line or not strip_line:
             continue
 
         # 匹配章节，自动添加二级标题##
@@ -136,11 +133,21 @@ def clean_msd_html(html_content: str) -> str:
     # 去除段落内过多连续空格
     clean_content = re.sub(r"\s{3,}", " ", clean_content)
     # 清理跳转类括号标记（不删除医学括号释义，只删纯跳转标识）
-    clean_content = re.sub(r"\[.*?\]", "", clean_content)
+    # 方括号可能包含有效医学信息，不按标点形式整段删除。
     return clean_content
 
 
 def main():
+    global ROOT_DIR, OUTPUT_MD_DIR, JSON_FOLDER
+    parser = argparse.ArgumentParser(description='Extract MSD HTML into Markdown')
+    parser.add_argument('--input-dir', type=Path, default=ROOT_DIR)
+    parser.add_argument('--output-dir', type=Path, default=OUTPUT_MD_DIR)
+    args = parser.parse_args()
+    ROOT_DIR, OUTPUT_MD_DIR = args.input_dir, args.output_dir
+    JSON_FOLDER = ROOT_DIR / 'Json'
+    if not (JSON_FOLDER / 'sections.json').is_file():
+        parser.error(f'Missing input index: {JSON_FOLDER / "sections.json"}')
+    OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
     uuid_map = build_uuid_title_mapping()
     html_list = list(ROOT_DIR.glob("*.html"))
     success = 0

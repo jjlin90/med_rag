@@ -15,20 +15,15 @@ from ..config.settings import Config
 
 logger = logging.getLogger(__name__)
 
-# 用于规范化的正则：剔除所有空格与中英文标点，仅保留字母、数字、下划线与汉字。
-_CJK_RE = re.compile(r"[^\w\u4e00-\u9fff]")
-
-
 def normalize_query(text: str) -> str:
     """把用户问题规范化为稳定的缓存键。
 
-    去除首尾空白、转小写，并剔除所有空格与中英文标点，仅保留字母、数字、
-    下划线与汉字。这样「感冒吃什么药？」与「 感冒吃什么药 」会命中同一条
-    Redis 缓存，提高命中率。
+    仅去除首尾空白，保留数字、标点、大小写和内部空格，避免合并不同语义。
     """
     if not text:
         return ""
-    return _CJK_RE.sub("", text.strip().lower())
+    # Preserve units, decimal points, signs and token boundaries.
+    return text.strip()
 
 
 def _digest(text: str) -> str:
@@ -36,19 +31,16 @@ def _digest(text: str) -> str:
     return hashlib.md5(normalize_query(text).encode("utf-8")).hexdigest()
 
 
-def query_cache_key(text: str) -> str:
-    """通用问答缓存键（RAG / LLM 回答）。
-
-    注意：不要用 Python 内置 hash()——它对 str 的散列值在每次解释器启动时
-    随机化（PYTHONHASHSEED），会导致同一条问题在不同进程里得到不同 key，
-    Redis 缓存无法跨重启命中。这里改用 hashlib.md5(规范化文本)。
-    """
-    return f"query:{_digest(text)}"
+def query_cache_key(text: str, source_filter=None, strategy=None, history=None) -> str:
+    """问题、来源、策略和历史共同构成稳定的 v2 缓存键。"""
+    payload = json.dumps([normalize_query(text), source_filter, strategy, history],
+                         ensure_ascii=False, sort_keys=True)
+    return f"query:v2:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
 def faq_cache_key(text: str) -> str:
     """FAQ 一级缓存键：MySQL 命中后写入，下次查询优先查这里。"""
-    return f"faq:{_digest(text)}"
+    return f"faq:v2:{_digest(text)}"
 
 class CacheManager:
     """Redis缓存管理器"""

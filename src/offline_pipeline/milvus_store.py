@@ -79,7 +79,7 @@ class MilvusStore:
         两者语义等价：chunk_type=='parent' 的块 parent_id 恒为空字符串。
         """
         if self.has_chunk_type_field():
-            return "chunk_type == 'child'"
+            return "chunk_type == 'child' and parent_id != ''"
         return "parent_id != ''"
 
     @staticmethod
@@ -343,11 +343,8 @@ class MilvusStore:
                     # 父块 parent_id 为 None 时归一为空串：空串是「我是父块」的判定依据
                     parent_ids.append(doc.get('parent_id') or '')
                     parent_contents.append(doc.get('parent_content') or '')
-                    # 顶层 chunk_type 缺失时，从 metadata 回补，避免旧分块数据丢类型
-                    chunk_types.append(
-                        doc.get('chunk_type')
-                        or doc.get('metadata', {}).get('chunk_type')
-                        or ('child' if doc.get('parent_id') else 'parent'))
+                    # 按父子关系写类型，纠正旧数据中已有但错误的 chunk_type。
+                    chunk_types.append('child' if doc.get('parent_id') else 'parent')
                     sources.append(
                         doc.get('metadata', {}).get('source', 'unknown'))
                     # timestamp 在 schema 中为 int64，但源头可能是 float（如 st_mtime），统一转 int 兜底
@@ -481,7 +478,7 @@ class MilvusStore:
 
         except MilvusException as e:
             logger.error(f"Search failed: {str(e)}")
-            return []
+            raise
 
     def hybrid_search_with_rerank(self,
                                   query_dense: List[float],

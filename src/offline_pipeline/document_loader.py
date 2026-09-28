@@ -1,11 +1,11 @@
 """
 Document Loader Module
-支持多格式文档加载 + OCR（docx/pdf/pptx/md/txt）
+支持多格式文档加载（docx/pdf/pptx/md/txt）；OCR 接口尚为占位
 """
 
 import os
 import fitz  # PyMuPDF
-from docx import Document
+from docx import Document as DocxDocument
 from pptx import Presentation
 from pathlib import Path
 from typing import List, Dict, Any
@@ -19,9 +19,7 @@ logger = logging.getLogger(__name__)
 LOADER_MAPPING = {
     '.pdf': 'pdf',
     '.docx': 'docx',
-    '.doc': 'docx',
     '.pptx': 'pptx',
-    '.ppt': 'pptx',
     '.txt': 'txt',
     '.md': 'markdown'
 }
@@ -80,9 +78,9 @@ class DocumentLoader:
         try:
             if loader_type == 'pdf':
                 return self._load_pdf(file_path)
-            elif loader_type in ['docx', 'doc']:
+            elif loader_type == 'docx':
                 return self._load_docx(file_path)
-            elif loader_type in ['pptx', 'ppt']:
+            elif loader_type == 'pptx':
                 return self._load_pptx(file_path)
             elif loader_type == 'txt':
                 return self._load_txt(file_path)
@@ -136,7 +134,7 @@ class DocumentLoader:
         documents = []
 
         try:
-            doc = Document(file_path)
+            doc = DocxDocument(file_path)
             full_text = []
 
             for paragraph in doc.paragraphs:

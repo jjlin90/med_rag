@@ -134,7 +134,7 @@ class FAQSearch:
             self.bm25_index = None
             self.faq_id_map = {}
 
-    def search_faq(self, query: str, intent: str = 'unknown') -> Tuple[Optional[str], bool]:
+    def search_faq(self, query: str, intent: str = 'unknown', use_cache: bool = True) -> Tuple[Optional[str], bool]:
         """
         FAQ 快通道检索（对齐 EduRag ①快通道：BM25 + Redis + MySQL）。
 
@@ -152,15 +152,15 @@ class FAQSearch:
         Returns:
             (answer, need_llm): 答案和是否需要走 RAG
         """
-        if not self.connection or not self.cursor:
-            return None, True
-
         # 1. 一级缓存：Redis 优先（对齐 EduRag "Redis 查缓存 answer:(query)"）
         faq_key = faq_cache_key(query)
-        cached = self.cache.get(faq_key)
-        if cached and cached.get('type') == 'faq':
+        cached = self.cache.get(faq_key) if use_cache else None
+        if isinstance(cached, dict) and cached.get('type') == 'faq' and cached.get('answer'):
             logger.info(f"FAQ Redis 缓存命中，直接返回: {query}")
             return cached.get('answer'), False
+
+        if not self.connection or not self.cursor or self.bm25_index is None:
+            return None, True
 
         # 2. 二级库：jieba 分词 → BM25 → softmax 归一化
         try:
@@ -191,16 +191,17 @@ class FAQSearch:
             answer = result['answer']
 
             # 6. 写回 Redis 一级缓存（对齐 EduRag "取答案 + 回填缓存"）
-            self.cache.set(faq_key, {
-                'type': 'faq',
-                'answer': answer,
-                'sources': [],
-                'confidence': best_score,
-                'intent': intent,
-                'strategy': 'faq',
-                'faq_id': best_faq_id,
-                'need_rag': False,
-            }, ttl=self.config.FAQ_CACHE_TTL)
+            if use_cache:
+                self.cache.set(faq_key, {
+                    'type': 'faq',
+                    'answer': answer,
+                    'sources': [],
+                    'confidence': best_score,
+                    'intent': intent,
+                    'strategy': 'faq',
+                    'faq_id': best_faq_id,
+                    'need_rag': False,
+                }, ttl=self.config.FAQ_CACHE_TTL)
 
             logger.info(
                 f"FAQ 快通道命中: ID={best_faq_id}, "
@@ -465,7 +466,7 @@ class BM25Index:
             [(normalized_score, doc_index), ...]，按归一化分数降序
         """
         raw_results = self.search(query, k=k)
-        if not raw_results:
+        if not raw_results or raw_results[0][0] <= 0:
             return []
 
         raw_scores = np.array([s for s, _ in raw_results], dtype=np.float64)
@@ -492,7 +493,7 @@ class BM25Index:
         if jieba:
             try:
                 tokens = jieba.lcut(text.lower())
-                return tokens
+                return [token for token in tokens if any(c.isalnum() for c in token)]
             except:
                 pass
 

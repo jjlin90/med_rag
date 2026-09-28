@@ -4,6 +4,7 @@ Milvus混合稠密+稀疏检索
 """
 
 import logging
+import json
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
@@ -506,7 +507,7 @@ class Retrieval:
 
     def _build_source_filter(self, source: str) -> str:
         """构建来源过滤表达式"""
-        return f"source == '{source}'"
+        return f"source == {json.dumps(source, ensure_ascii=False)}"
 
     def get_source_stats(self) -> Dict[str, int]:
         """获取各来源的文档统计"""

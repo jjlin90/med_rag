@@ -5,10 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --outDir ../artifacts",
-    "preview": "vite preview --outDir ../artifacts",
-    "build:slides": "rm -rf ./dist-slides && node scripts/build-slides.js",
-    "build:export-pptx": "node ../.codebuddy/skills/ppt-implement/scripts/export/html2pptx.js ./dist-slides/all-slides.html ../artifacts/presentation.pptx && rm -rf ./dist-slides"
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:slides": "node scripts/build-slides.js"
   },
   "dependencies": {
     "juice": "^11.1.0",
