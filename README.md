@@ -1,7 +1,7 @@
 # 医疗知识问答系统 (Medical RAG System)
 
 基于 RAG（检索增强生成）的医疗科普知识问答系统，支持**离线知识入库**与**在线智能问答**两条链路。
-本地知识文件将来源标为《默沙东诊疗手册（大众版）》。项目定位为技术学习与演示；数据授权与合规状态需另行审查。
+本地原始目录 `MSDZHConsumerMedicalTopics` 与抽取脚本将语料归为《默沙东诊疗手册（大众版）》；这不是对每篇清洗文件的独立来源验证。项目定位为技术学习与演示；数据授权与合规状态需另行审查。
 
 ## 核心特性
 
@@ -27,7 +27,7 @@
 | 历史 210 题报告与失败样本分析 | [Ragas 评估与 badcase 分析](docs/Ragas评估与badcase分析.md)（历史评测，不代表本次代码修订后重测） |
 | 父子块过滤、降级与迁移边界 | [Small-to-Big 缺陷修复报告](docs/diagrams/Small-to-Big缺陷修复报告.md)（区分当前实现与历史运行记录） |
 
-旧版 [面试全解](docs/med_rag_面试全解.md) 和 [学习指南](docs/rag_learning_guide.md) 保留为合并文档的导航入口，不再分别维护完整正文。审查产物与本地资料的用途见 [artifacts 目录说明](artifacts/README.md)。
+旧版 [面试全解](docs/med_rag_面试全解.md) 和 [学习指南](docs/rag_learning_guide.md) 保留为合并文档的导航入口，不再分别维护完整正文。本地演示和审查资料存于已忽略的 `artifacts/`，不随源码或 wheel 发布；仓库清理范围见 [仓库卫生与历史清理](docs/repository-hygiene.md)。
 
 ## 项目结构
 
@@ -90,7 +90,7 @@ med_rag/
 | 向量数据库 | Milvus（IVF_FLAT + 稀疏向量，加权混合检索） |
 | 向量模型 | BGE-M3（dense 1024 维 + sparse lexical weights） |
 | 重排模型 | BGE-reranker-large（FlagReranker） |
-| 意图分类 | BERT 中文（bert_query_classifier；仓库有权重，无训练日志） |
+| 意图分类 | BERT 中文（bert_query_classifier；本地存在模型权重与训练日志，均不由 Git 跟踪） |
 | 策略选择 | LLM 自动（direct / hyde / subquery / backtracking） |
 | 会话存储 | MySQL(PyMySQL) conversations 表 |
 | 缓存/FAQ | Redis + MySQL(PyMySQL) + jieba BM25 |

@@ -85,7 +85,7 @@
 <rect x="60" y="1380" width="970" height="110" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="82" y="1419" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">⑦ BGE-reranker：原问题 × 候选证据 → 最多2条</text>
 <text x="82" y="1451" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L0优先用最佳子块打分、父正文生成；L1用子片段</text>
-<text x="82" y="1478" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">重排不可用时回退原顺序，未自动标记degraded</text>
+<text x="82" y="1478" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">重排失败返回 L2 / reranker_unavailable，不生成、不缓存</text>
 <path d="M545 1490 L545 1535" stroke="#54748e" stroke-width="3"/>
 <polygon points="545.0,1535.0 538.8,1523.6 551.2,1523.6" fill="#54748e"/>
 <rect x="60" y="1535" width="970" height="130" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
@@ -106,7 +106,7 @@
 <rect x="60" y="1720" width="970" height="110" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="82" y="1759" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">⑨ API保存会话、按条件回写query缓存</text>
 <text x="82" y="1791" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">MySQL最近5轮；不自动按session_id读历史给模型</text>
-<text x="82" y="1818" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">返回level≥2不缓存；部分子查询故障仍存在透传缺口</text>
+<text x="82" y="1818" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">任一子查询 error 升级整体 L2；返回 level≥2 不缓存</text>
 <path d="M545 1830 L545 1880" stroke="#54748e" stroke-width="3"/>
 <polygon points="545.0,1880.0 538.8,1868.6 551.2,1868.6" fill="#54748e"/>
 <rect x="60" y="1880" width="970" height="95" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
@@ -115,7 +115,7 @@
 <rect x="60" y="2025" width="1480" height="185" rx="15" fill="#e8eef6" stroke="#b4c5d7" stroke-width="2"/>
 <text x="82" y="2064" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">读图边界</text>
 <text x="82" y="2096" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">CLI直接调用RAGSystem，不走上述FAQ/query缓存。sources独立返回，不保证句级引用。</text>
-<text x="82" y="2123" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">缓存只按规范化问题建键，忽略history/source/strategy且移除标点；当前存在错误复用风险。</text>
+<text x="82" y="2123" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">query:v2 包含问题、history/source/strategy，保留标点；模型与知识库版本失效策略仍待完善。</text>
 <text x="82" y="2150" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">图示描述已启动服务的请求流程；Milvus/BGE/BERT初始化失败可能阻断启动，不能承诺任何故障都返回L2。</text>
 <text x="82" y="2177" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">本次未重测在线依赖；不使用“零开销”“毫秒级SLA”“已验证生产性能”等无实测表述。</text>
 </svg></main></html>

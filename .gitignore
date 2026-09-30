@@ -99,6 +99,8 @@ docs/_build/
 
 # ===================== 工具自身数据（非项目代码） =====================
 .workbuddy/
+.mimosa/
+.pytest_cache/
 
 # JavaScript dependencies and local build output
 node_modules/
@@ -108,3 +110,12 @@ frontend/dist-slides/
 artifacts/**/chrome_profile/
 artifacts/个人背景信息*.docx
 artifacts/个人背调信息*.docx
+
+# 本地演示、审查与个人资料产物统一保留在磁盘，不随源码发布。
+/artifacts/
+/eval/
+/api/
+*.docx
+/docs/page-global-config.json
+/docs/pages.json
+/docs/project.json

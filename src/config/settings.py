@@ -132,13 +132,11 @@ class Config:
         self.LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 
         # ===================== MySQL 配置（FAQ 问答库） =====================
-        # 本地开发库，凭据随代码提交（与 .env 里的 LLM_API_KEY 不同，MySQL 是本地库，
-        # 提交不算泄露）；若部署到别的环境，用同名环境变量覆盖即可。
-        # 注意：这里的密码是占位值，请改成你本机 MySQL 实际密码后再提交/运行。
+        # 凭据从环境变量或本地 .env 读取，不把实际密码写入源码。
         self.MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
         self.MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
         self.MYSQL_USER = os.getenv("MYSQL_USER", "root")
-        self.MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "123456")
+        self.MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
         self.MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "medical_rag")
 
         # ===================== Redis 配置（缓存，可选） =====================

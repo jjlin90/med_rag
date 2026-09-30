@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Medical knowledge retrieval and question answering demo"
 readme = "README.md"
 authors = [
-    { name = "JJLIN", email = "[removed private data]" }
+    { name = "JJLIN" }
 ]
 requires-python = ">=3.10,<3.11"
 dependencies = [
