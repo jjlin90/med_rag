@@ -72,7 +72,7 @@ med_rag/
 │   ├── extract_msd.py        # MSD 原始数据抽取
 │   ├── check_chunk_type_filter.py # Milvus 体检：chunk_type 过滤下推验证（--with-search 端到端）
 │   ├── test_degrade_policy.py# 分层降级策略 mock 测试（L0/L1/L2 全场景）
-│   ├── update_pptx_text.py   # 同步 presentation.pptx 中与代码脱节的表述（支持 --dry-run）
+│   ├── update_pptx_text.py   # 更新本地 PPT（不随仓库分发；用 --pptx 指定文件，支持 --dry-run）
 │   └── test_*.py / simple_*.py   # 测试与简化版工具
 ├── main.py                   # 命令行交互入口（直接输入问题→RAG 生成，不含学科选择）
 ├── data/                     # 数据（git 已屏蔽）

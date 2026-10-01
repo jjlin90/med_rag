@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 同步 artifacts/presentation.pptx 中与代码不一致的表述。
+该演示文件是本地产物，不随仓库分发；新克隆请用 --pptx 指定自己的文件。
 
 背景：PPT 生成于双通道改造之前，以下 12 处已与代码脱节：
   - 检索/重排参数（Top8 / Top4 → Top-16 / Top-5 子块 / Top-2 父块）
@@ -14,14 +15,13 @@
 用法：
   python scripts/update_pptx_text.py                 # 默认改 artifacts/presentation.pptx
   python scripts/update_pptx_text.py --dry-run       # 只预览，不写盘
+  python scripts/update_pptx_text.py --pptx path/to/slides.pptx --dry-run
 """
 
 import argparse
 import shutil
 import sys
 from pathlib import Path
-
-from pptx import Presentation
 
 BASE_DIR = Path(__file__).parent.parent
 DEFAULT_PPTX = BASE_DIR / "artifacts" / "presentation.pptx"
@@ -66,14 +66,17 @@ REPLACEMENTS = {
 
 def main():
     parser = argparse.ArgumentParser(description="同步 PPT 中与代码脱节的表述")
-    parser.add_argument("--pptx", default=str(DEFAULT_PPTX), help="目标 pptx 路径")
+    parser.add_argument("--pptx", default=str(DEFAULT_PPTX), help="目标 pptx 路径；默认文件仅在本地存在，不随仓库分发")
     parser.add_argument("--dry-run", action="store_true", help="只预览不写盘")
     args = parser.parse_args()
 
     pptx_path = Path(args.pptx)
-    if not pptx_path.exists():
+    if not pptx_path.is_file():
         print(f"[FAIL] 文件不存在: {pptx_path}")
+        print("PPT 是本地产物，不随仓库分发。请用 --pptx 指定已有 .pptx 文件。")
         return 1
+
+    from pptx import Presentation
 
     prs = Presentation(str(pptx_path))
     hit = {k: 0 for k in REPLACEMENTS}

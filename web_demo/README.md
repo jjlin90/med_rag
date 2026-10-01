@@ -23,6 +23,8 @@ uv sync --extra demo
 
 默认打开：`http://localhost:8501`
 
+Windows 完成上述 `uv sync --extra demo` 后，也可以双击 `run_streamlit.bat`；脚本使用项目根目录的 `.venv`。
+
 ## 功能
 
 - 单一问答 `/query`

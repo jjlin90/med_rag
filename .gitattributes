@@ -1,0 +1,2 @@
+# Windows launchers require CRLF even when a clone disables core.autocrlf.
+*.bat text eol=crlf
