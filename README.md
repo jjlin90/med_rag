@@ -80,7 +80,9 @@ med_rag/
 │   ├── clean_md/             # 清洗后 Markdown（约 2570 篇）
 │   ├── split_docs/docs.json  # 20816 条记录（按 parent_id：16880 子块 + 3936 父块）
 │   └── test_query/           # 测试集 / 评估数据
-└── docs/                     # architecture.md / data_source.md
+├── web_demo/                 # Streamlit 问答与评测界面
+├── frontend/                 # Vite 项目演示页面
+└── docs/                     # 架构、数据来源、学习与面试、评测分析和仓库核查文档
 ```
 
 ## 技术栈
@@ -90,7 +92,7 @@ med_rag/
 | 向量数据库 | Milvus（IVF_FLAT + 稀疏向量，加权混合检索） |
 | 向量模型 | BGE-M3（dense 1024 维 + sparse lexical weights） |
 | 重排模型 | BGE-reranker-large（FlagReranker） |
-| 意图分类 | BERT 中文（bert_query_classifier；本地存在模型权重与训练日志，均不由 Git 跟踪） |
+| 意图分类 | BERT 中文（bert_query_classifier；本地分类器目录包含模型权重与训练参数文件，二者均不由 Git 跟踪；训练参数文件不等于训练日志） |
 | 策略选择 | LLM 自动（direct / hyde / subquery / backtracking） |
 | 会话存储 | MySQL(PyMySQL) conversations 表 |
 | 缓存/FAQ | Redis + MySQL(PyMySQL) + jieba BM25 |
