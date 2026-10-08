@@ -10,19 +10,19 @@ window.slideDataMap.set(15, `
     <div class="grid grid-cols-2 gap-5 flex-1">
       <div class="bg-slate-800/50 border border-emerald-500/30 rounded-xl p-5 flex items-start gap-4">
         <span class="font-mono text-emerald-300 text-xl">✓</span>
-        <div><p class="text-white font-semibold mb-1">可运行</p><p class="text-slate-400 text-sm">离线建库 + 在线 API（8005）+ Streamlit 前端（8501）端到端打通。</p></div>
+        <div><p class="text-white font-semibold mb-1">运行入口</p><p class="text-slate-400 text-sm">离线建库、在线 API（8005）、CLI 与 Streamlit 界面（8501），共用核心问答流程。</p></div>
       </div>
       <div class="bg-slate-800/50 border border-emerald-500/30 rounded-xl p-5 flex items-start gap-4">
         <span class="font-mono text-emerald-300 text-xl">✓</span>
-        <div><p class="text-white font-semibold mb-1">稳定性</p><p class="text-slate-400 text-sm">修复 Windows uv venv 缺 VC++ 运行时崩溃，自包含 8 个 DLL。</p></div>
+        <div><p class="text-white font-semibold mb-1">独立启动</p><p class="text-slate-400 text-sm">Windows 预加载 PyArrow，提供净化环境启动器；独立进程回归覆盖 API 帮助与延迟导入。</p></div>
       </div>
       <div class="bg-slate-800/50 border border-emerald-500/30 rounded-xl p-5 flex items-start gap-4">
         <span class="font-mono text-emerald-300 text-xl">✓</span>
-        <div><p class="text-white font-semibold mb-1">可用性</p><p class="text-slate-400 text-sm">修复 FAQ 误答：医疗问题跳过 FAQ + 关键词守卫。</p></div>
+        <div><p class="text-white font-semibold mb-1">FAQ 路由</p><p class="text-slate-400 text-sm">零匹配进入 RAG；带历史、来源过滤或显式策略的请求直接进入深通道。</p></div>
       </div>
       <div class="bg-slate-800/50 border border-emerald-500/30 rounded-xl p-5 flex items-start gap-4">
         <span class="font-mono text-emerald-300 text-xl">✓</span>
-        <div><p class="text-white font-semibold mb-1">中间件</p><p class="text-slate-400 text-sm">Milvus / Redis（Docker，密码 1234）/ MySQL 已联通并验证。</p></div>
+        <div><p class="text-white font-semibold mb-1">故障处理</p><p class="text-slate-400 text-sm">检索、意图分类与重排故障显式返回 L2；回归验证拒答及跳过缓存的行为。</p></div>
       </div>
     </div>
     <div class="mt-5 bg-slate-900/40 border border-cyan-500/30 rounded-lg px-6 py-4 flex items-center justify-center gap-6 flex-wrap">

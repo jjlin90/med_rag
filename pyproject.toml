@@ -72,17 +72,9 @@ demo = ["streamlit>=1.37,<2", "pyarrow>=7,<25"]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# ========== torch 官方 CUDA 索引（Windows 必配） ==========
-# 隐蔽坑（2026-08-29 实测定位）：Windows 上 PyPI / 清华镜像的 `torch` wheel 是
-# **CPU-only** 的 —— torch-2.13.0-cp310-cp310-win_amd64.whl 只有 122MB，
-# 而同版本 cu126 的 Windows wheel 约 2.5GB。差别一眼可辨。
-#
-# 因此只要不显式指定 PyTorch 官方索引，任何一次 `uv sync` / `uv lock` 都会
-# 静默把已装好的 GPU 版覆盖成 CPU 版，torch.cuda.is_available() 直接变 False，
-# 全程无任何报错——表现只是"变慢了"，极难察觉。
-# 本项目 BGE-M3 embedding 与重排都靠 GPU，必须锁死索引来源。
-#
-# Linux 的 PyPI 默认 wheel 自带 CUDA，无需换源，故用 platform marker 区分。
+# Windows 的 uv 安装显式使用项目选定的 PyTorch cu126 索引。
+# 实际 GPU 可用性同时取决于 PyTorch 构建、驱动与硬件；不可用时使用 CPU。
+# 其他平台沿用锁文件解析来源。pip requirements 安装须独立核对运行设备。
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu126", marker = "sys_platform == 'win32'" },

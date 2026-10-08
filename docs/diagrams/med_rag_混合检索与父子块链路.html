@@ -1,6 +1,6 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>med_rag_混合检索与父子块链路</title><style>body{margin:0;background:#f3f6fa;font-family:Microsoft YaHei,sans-serif}main{max-width:1600px;margin:auto;padding:16px}svg{width:100%;height:auto}p{line-height:1.7}</style><main><p>按代码配置绘制，已删除HNSW、200题网格搜索、最优权重等无依据表述。 <a href="../med_rag_学习与面试全解.md">完整代码核查与边界</a></p><svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1970" viewBox="0 0 1600 1970"><rect width="100%" height="100%" fill="#f3f6fa"/>
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>med_rag_混合检索与父子块链路</title><style>body{margin:0;background:#f3f6fa;font-family:Microsoft YaHei,sans-serif}main{max-width:1600px;margin:auto;padding:16px}svg{width:100%;height:auto}p{line-height:1.7}</style><main><p>按当前混合检索、父子映射与降级实现绘制。 <a href="../med_rag_学习与面试全解.md">完整代码核查与边界</a></p><svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1970" viewBox="0 0 1600 1970"><rect width="100%" height="100%" fill="#f3f6fa"/>
 <text x="60" y="78" font-family="Microsoft YaHei,sans-serif" font-size="38" font-weight="700" fill="#172f47">混合检索与父子块：每次检索的正常L0链路</text>
-<text x="60" y="117" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#52647a">2026-09-27修订｜两路检索融合不是Cross-Encoder精排；子块打分与父正文生成分开</text>
+<text x="60" y="117" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#52647a">2026-10-08修订｜两路检索融合不是Cross-Encoder精排；子块打分与父正文生成分开</text>
 <rect x="300" y="160" width="1000" height="105" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="322" y="199" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">查询文本 → BGE-M3 encode</text>
 <text x="322" y="231" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">dense 1024维 + sparse lexical weights；ColBERT关闭</text>
@@ -31,7 +31,7 @@
 <rect x="300" y="710" width="1000" height="135" rx="15" fill="#ffffff" stroke="#b4c5d7" stroke-width="2"/>
 <text x="322" y="749" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">子块校验 → 取前5有效子块</text>
 <text x="322" y="781" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">新schema：child且parent_id非空；旧schema：parent_id非空</text>
-<text x="322" y="808" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">联合过滤阻止误标父块抢位；仍需迁移历史标签</text>
+<text x="322" y="808" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">联合过滤校验类型与父关联；本地标签已修正</text>
 <text x="322" y="835" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">16→5是每次调用上限，subquery每个问题分别执行</text>
 <path d="M800 845 L800 890" stroke="#54748e" stroke-width="3"/>
 <polygon points="800.0,890.0 793.8,878.6 806.2,878.6" fill="#54748e"/>
@@ -56,7 +56,7 @@
 <text x="82" y="1469" font-family="Microsoft YaHei,sans-serif" font-size="25" font-weight="700" fill="#172f47">L1 / L2 例外</text>
 <text x="82" y="1501" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L0空且允许L1：去掉子块过滤重查，取前5命中，父块内存切成约400字符片段。</text>
 <text x="82" y="1528" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1候选总量最多16，片段沿用父命中融合分；精排和生成使用子片段，不自动返回大父正文。</text>
-<text x="82" y="1555" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1更大候选上限、末尾截断和重新切分都可能改变质量/成本，不能宣称风险不增或成本不增。</text>
+<text x="82" y="1555" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1最多16条子候选；候选截断与切分影响通过独立质量、耗时实验衡量。</text>
 <text x="82" y="1582" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">L1仍空或上层捕获故障时返回L2；默认不调用最终生成器。检索异常向上传播；部分分支故障也升级 L2。</text>
 <text x="82" y="1609" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">缺langchain时使用固定滑窗；离线备用切分已修复，仍须对具体数据核验覆盖与质量。</text>
 <rect x="60" y="1690" width="1480" height="215" rx="15" fill="#e8eef6" stroke="#b4c5d7" stroke-width="2"/>
@@ -64,6 +64,6 @@
 <text x="82" y="1761" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">父2000 / 子400 / overlap60，按len字符切分；BGE max_length2048按token计，两者不是同一单位。</text>
 <text x="82" y="1788" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">父子块都向量化并insert入同一集合；子块保存parent_id和冗余parent_content。</text>
 <text x="82" y="1815" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">本地20816条＝3936逻辑父块＋16880子块；ID无重复、父ID引用与冗余正文一致。</text>
-<text x="82" y="1842" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">但顶层chunk_type全为child，3936条父类型错误；重新建集合不会自动修正旧JSON。</text>
-<text x="82" y="1869" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">这是本地文件核验，不代表在线Milvus当前记录数；本次未重建索引或做在线召回实验。</text>
+<text x="82" y="1842" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">2026-10-08已备份修正3936条旧父标签；顶层与元数据类型均与父子关系一致。</text>
+<text x="82" y="1869" font-family="Microsoft YaHei,sans-serif" font-size="21" font-weight="400" fill="#172f47">本地文件于2026-10-08复核；在线集合实体数与过滤效果在服务启动后单独验收。</text>
 </svg></main></html>

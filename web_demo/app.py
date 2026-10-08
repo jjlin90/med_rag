@@ -315,6 +315,9 @@ if page == "智能问答":
                     answer = result.get("answer", "")
                     st.markdown(answer)
 
+                    if result.get('degraded'):
+                        st.warning('本轮处于备用检索或服务降级状态，请结合回答提示和所附资料阅读。')
+
                     meta_cols = st.columns(4)
                     meta_cols[0].metric("意图", result.get("intent", "—"))
                     meta_cols[1].metric("策略", result.get("strategy", "—"))

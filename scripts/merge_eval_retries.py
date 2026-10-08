@@ -4,11 +4,13 @@ import argparse
 import csv
 import json
 import math
+import statistics
 from pathlib import Path
 
 
 def valid(value):
-    return isinstance(value, (int, float)) and math.isfinite(value)
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and 0 <= value <= 1)
 
 
 def main():
@@ -22,13 +24,22 @@ def main():
 
     with open(args.base, encoding="utf-8") as handle:
         report = json.load(handle)
+    if report.get('engine') != 'ragas':
+        raise ValueError('Base report must use the Ragas engine')
     metrics = report["metrics"]
+    if not metrics or len(set(metrics)) != len(metrics):
+        raise ValueError('Metrics must be nonempty and unique')
     by_question = {row.get("question"): row for row in report["scores"]}
+    if len(by_question) != len(report['scores']):
+        raise ValueError('Base report contains duplicate questions')
+    previous_fills = report.get('retry_fills', [])
     fills = []
 
     for retry_path in args.retry:
         with open(retry_path, encoding="utf-8") as handle:
             retry = json.load(handle)
+        if retry.get('engine') != 'ragas':
+            raise ValueError('Retry report must use the Ragas engine')
         for retry_row in retry.get("scores", []):
             question = retry_row.get("question")
             base_row = by_question.get(question)
@@ -53,18 +64,24 @@ def main():
         for metric in metrics
     }
     report["average"] = {}
+    raw_average = {}
     for metric in metrics:
         values = [row[metric] for row in report["scores"] if valid(row.get(metric))]
-        report["average"][metric] = round(sum(values) / len(values), 4) if values else 0.0
+        raw_average[metric] = statistics.mean(values) if values else None
+        report["average"][metric] = round(raw_average[metric], 4) if values else None
+        for row in report['scores']:
+            if not valid(row.get(metric)):
+                row[metric] = None
     report["complete_count"] = sum(
         all(valid(row.get(metric)) for metric in metrics)
         for row in report["scores"]
     )
-    report["composite"] = round(
-        sum(report["average"][metric] for metric in metrics) / len(metrics), 4
-    )
+    # Round once, and only summarize a complete common sample set.
+    complete_rows = [row for row in report['scores'] if all(valid(row.get(m)) for m in metrics)]
+    report['composite'] = (round(statistics.mean(row[m] for row in complete_rows for m in metrics), 4)
+                           if complete_rows else None)
 
-    prior = report.get("evaluation_config", {}).get("judge_model", "unknown")
+    prior = report.get('evaluation_config', {}).get('primary_judge_model') or report.get("evaluation_config", {}).get("judge_model", "unknown")
     report["evaluation_config"] = {
         **report.get("evaluation_config", {}),
         "judge_model": "mixed",
@@ -73,22 +90,26 @@ def main():
         "mixed_judge": True,
         "note": "Existing valid scores were preserved; only missing cells were filled by the retry judge.",
     }
-    report["retry_fills"] = fills
-    report["metric_judge_counts"] = {
-        metric: {
-            prior: report["valid_counts"][metric]
-                   - sum(metric in fill["metrics"] for fill in fills),
-            args.retry_judge: sum(metric in fill["metrics"] for fill in fills),
-        }
-        for metric in metrics
-    }
+    report["retry_fills"] = previous_fills + fills
+    counts = {}
+    for metric in metrics:
+        metric_counts = {}
+        for fill in report['retry_fills']:
+            if metric in fill['metrics']:
+                judge = fill['judge']
+                metric_counts[judge] = metric_counts.get(judge, 0) + 1
+        metric_counts[prior] = metric_counts.get(prior, 0) + report['valid_counts'][metric] - sum(metric_counts.values())
+        counts[metric] = metric_counts
+    report['metric_judge_counts'] = counts
 
     out_json = Path(args.out_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)
     with open(out_json, "w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2)
 
-    with open(args.out_csv, "w", encoding="utf-8-sig", newline="") as handle:
+    out_csv = Path(args.out_csv)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_csv, "w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=["question", *metrics])
         writer.writeheader()
         writer.writerows(

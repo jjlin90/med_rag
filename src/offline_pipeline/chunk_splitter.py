@@ -90,7 +90,7 @@ class ChunkSplitter:
 
             except Exception as e:
                 logger.error(f"Error splitting document {doc.metadata.get('file_path', 'unknown')}: {str(e)}")
-                continue
+                raise
 
         return all_chunks
 

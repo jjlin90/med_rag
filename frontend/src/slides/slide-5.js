@@ -11,8 +11,8 @@ window.slideDataMap.set(5, `
     <div class="grid grid-cols-3 gap-6 flex-1">
       <div class="col-span-1 bg-indigo-500/10 border border-indigo-400/40 rounded-xl p-7 flex flex-col justify-center">
         <div class="w-12 h-12 rounded-lg bg-indigo-500/30 flex items-center justify-center font-mono text-2xl text-indigo-200 mb-4">MSD</div>
-        <h3 class="text-xl font-bold text-white mb-3">权威 · 公开 · 公益</h3>
-        <p class="text-slate-300 text-base leading-relaxed">全球权威医学科普平台，面向大众、无商业诊疗导向，是本项目唯一知识来源。</p>
+        <h3 class="text-xl font-bold text-white mb-3">医学科普 · 大众版</h3>
+        <p class="text-slate-300 text-base leading-relaxed">本地语料按默沙东手册大众版组织，用于医疗科普技术学习与演示；来源授权由数据提供方材料确认。</p>
       </div>
       <div class="col-span-2 grid grid-cols-2 gap-5">
         <div class="bg-slate-800/50 border border-cyan-500/30 rounded-xl p-6 flex flex-col justify-center">
@@ -24,12 +24,12 @@ window.slideDataMap.set(5, `
           <p class="text-slate-400 text-base mt-1">父子分块文本单元</p>
         </div>
         <div class="bg-slate-800/50 border border-purple-500/30 rounded-xl p-6 flex flex-col justify-center">
-          <p class="font-mono text-4xl font-bold text-purple-300">462–555<span class="text-xl text-slate-400 ml-1">字</span></p>
-          <p class="text-slate-400 text-base mt-1">单块平均字符数</p>
+          <p class="font-mono text-4xl font-bold text-purple-300">522.90<span class="text-xl text-slate-400 ml-1">字符</span></p>
+          <p class="text-slate-400 text-base mt-1">全部父子记录平均长度</p>
         </div>
         <div class="bg-slate-800/50 border border-purple-500/30 rounded-xl p-6 flex flex-col justify-center">
-          <p class="font-mono text-4xl font-bold text-purple-300">1998<span class="text-xl text-slate-400 ml-1">字</span></p>
-          <p class="text-slate-400 text-base mt-1">最大块字符数</p>
+          <p class="font-mono text-4xl font-bold text-purple-300">2000<span class="text-xl text-slate-400 ml-1">字符</span></p>
+          <p class="text-slate-400 text-base mt-1">全部父子记录最大长度</p>
         </div>
       </div>
     </div>
@@ -43,7 +43,7 @@ window.slideDataMap.set(5, `
       <span class="text-slate-300 text-sm">皮肤</span><span class="text-slate-600">·</span>
       <span class="text-slate-300 text-sm">儿科</span><span class="text-slate-600">·</span>
       <span class="text-slate-300 text-sm">妇科</span>
-      <span class="ml-auto text-emerald-300 text-sm">合规：仅技术学习/学术演示，无隐私、无侵权爬取</span>
+      <span class="ml-auto text-emerald-300 text-sm">用途：技术学习与演示；数据使用依据来源材料确认</span>
     </div>
   </div>
 </div>

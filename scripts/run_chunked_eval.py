@@ -31,6 +31,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -160,9 +161,13 @@ def merge_results(results: list[dict]) -> dict:
     avg = {}
     metric_keys = results[0].get("metrics", [])
     for k in metric_keys:
-        vals = [s[k] for s in all_scores if k in s
-                and isinstance(s[k], (int, float)) and __import__("math").isfinite(s[k])]
-        avg[k] = round(sum(vals) / len(vals), 4) if vals else 0.0
+        for row in all_scores:
+            value = row.get(k)
+            if not (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and 0 <= value <= 1):
+                row[k] = None
+        vals = [s[k] for s in all_scores if s[k] is not None]
+        avg[k] = round(sum(vals) / len(vals), 4) if vals else None
 
     merged = {
         "engine": results[0].get("engine", "unknown"),
@@ -170,6 +175,8 @@ def merge_results(results: list[dict]) -> dict:
         "metrics": metric_keys,
         "has_ground_truth": results[0].get("has_ground_truth", False),
         "average": avg,
+        "valid_counts": {k: sum(s[k] is not None for s in all_scores) for k in metric_keys},
+        "complete_count": sum(all(s[k] is not None for k in metric_keys) for s in all_scores),
         "scores": all_scores,
         "_chunks_meta": meta_list,
     }

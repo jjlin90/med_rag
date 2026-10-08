@@ -194,7 +194,7 @@ class Retrieval:
           L1 同粒度降级 → 子块召回为空时，放开过滤重查；若命中父块，
                          在内存中按 **与入库完全一致的参数** 切成 400 字子块再返回。
                          输出粒度没有退化，只是检索入口从「子块层」换到「父块层」。
-                         风险不上升，默认开启（ENABLE_CHILD_FILTER_FALLBACK）。
+                         质量与耗时另行验证，默认开启（ENABLE_CHILD_FILTER_FALLBACK）。
 
           L2 无召回    → 返回空结果并标记，由上层决定是否拒答。
                          **检索不到依据时不调用 LLM**（见 rag_system.generate），
@@ -282,8 +282,8 @@ class Retrieval:
         #   - 无 parent_id → 父块，需在内存中切成 400 字子块，保证粒度不退化
         # 候选总量与 L0 的 top_k_retrieve 对齐：一个 2000 字父块可切出 5-7 个子块，
         # 若命中多个父块，候选集会线性膨胀，导致 CrossEncoder 精排开销不可控。
-        # 上限保证「降级后 reranker 的输入规模不比正常路径更大」——
-        # 这也是「降级路径不能比主路径更贵」的一部分。
+        # 将 L1 候选限制为 top_k_retrieve。L0 聚合后至多 top_k_children 个父块，
+        # 两条路径输入数与长度不同，实际精排耗时应独立测量。
         l1_docs: List[Dict] = []
         for hit in relaxed[:self.top_k_children]:
             if hit.get('parent_id'):
@@ -293,7 +293,7 @@ class Retrieval:
             if len(l1_docs) >= self.top_k_retrieve:
                 l1_docs = l1_docs[:self.top_k_retrieve]
                 logger.info(
-                    "L1 候选达到上限 %d 条，截断以保证精排开销恒定", self.top_k_retrieve
+                    "L1 候选达到上限 %d 条，截断候选数量", self.top_k_retrieve
                 )
                 break
 

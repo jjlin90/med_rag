@@ -38,6 +38,13 @@ function extractHeadFromIndex() {
       .replace(/\n\s*\n\s*\n/g, '\n\n')
       .trim();
   }
+
+  // Standalone slides embed the icon so their head has no server-root dependency.
+  const faviconPath = path.join(rootDir, 'public', 'favicon.svg');
+  if (fs.existsSync(faviconPath)) {
+    const icon = encodeURIComponent(fs.readFileSync(faviconPath, 'utf-8'));
+    headContent = headContent.replace('href="/favicon.svg"', `href="data:image/svg+xml,${icon}"`);
+  }
   
   return {
     headContent
@@ -366,4 +373,7 @@ ${bodyContents.join('\n\n')}
 </html>`;
 }
 
-main().catch(console.error);
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -21,7 +21,7 @@
 - `src/styles/`：样式
 - `scripts/build-slides.js`：幻灯片构建脚本
 
-旧文档写成 `src/data/slide-N.js`、10 页，均与当前目录不符，已删除。
+共17页，支持按钮、方向键、Home/End和触摸翻页；页码与URL同步。
 
 ## 命令
 
@@ -35,4 +35,4 @@ npm run preview
 
 `npm run build` 写入 `frontend/dist/`，避免与项目文档、PPT 等共用 artifacts。`npm run build:slides` 直接运行 Node 脚本，已去除依赖 Unix rm 命令的前置步骤；输出 dist-slides。旧 build:export-pptx 引用了仓库不存在的 .codebuddy 导出器，已删除该无效命令；原有 PPT 文件保留。
 
-本文只陈述仓库代码和配置可证明的内容；浏览器版本范围、线上部署状态、许可证和性能均未由本仓库验证。
+2026-10-08 已验证17页渲染、桌面1600×1000、手机390×844、翻页和控制台。默认页面是静态汇报，问答界面位于 `web_demo/`。

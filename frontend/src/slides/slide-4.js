@@ -35,7 +35,7 @@ window.slideDataMap.set(4, `
           </div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400">
             <p class="text-white text-lg font-semibold mb-1">解法（RAG）</p>
-            <p class="text-slate-400 text-base leading-relaxed">先召回权威知识片段，再由大模型组织成自然语言。</p>
+            <p class="text-slate-400 text-base leading-relaxed">先检索本地医学资料，再依据上下文生成自然语言回答。</p>
           </div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400">
             <p class="text-white text-lg font-semibold mb-1">价值</p>

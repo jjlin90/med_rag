@@ -65,7 +65,7 @@ class Config:
 
         # L1：子块召回为空时，放开子块过滤重查；命中父块后在内存中切成子块再返回。
         #     输出粒度仍是 400 字子块，只是检索入口从「子块层」换成「父块层」，
-        #     属于同粒度降级，风险不上升，默认开启。
+        #     输出保持子块粒度，质量与耗时单独验证，默认开启。
         self.ENABLE_CHILD_FILTER_FALLBACK = True
 
         # L2：L1 仍为空时，是否允许交给 LLM 自由作答。
@@ -77,16 +77,13 @@ class Config:
         self.DEGRADE_ALERT_LEVEL = 1          # 0=不打点 1=L1及以上告警 2=仅L2告警
 
         # ===================== 设备全局配置 =====================
-        # 不能静默降级：Windows 上 `uv sync` 极易把 GPU 版 torch 覆盖成 CPU 版
-        # （pip/uv 默认源的 Windows wheel 是 CPU-only），此时 torch.cuda.is_available()
-        # 返回 False 时仍可使用 CPU；性能差异应由实际模型与硬件测试确认。
+        # 按当前 PyTorch 与硬件运行时检测；无可用 CUDA 时使用 CPU。
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         if self.DEVICE == "cpu":
             logger.warning(
-                "torch 未检测到 CUDA，使用 CPU 推理（实际耗时需在当前硬件上测量）。"
-                "常见原因：Windows 下被 pip/uv 默认源的 CPU 版 torch 覆盖。"
-                "修复见 pyproject.toml 的 [tool.uv.sources] torch 索引配置，"
-                "然后执行 uv sync 重装 GPU 版。"
+                "torch 未检测到可用 CUDA，使用 CPU 推理（torch=%s，构建CUDA=%s）。"
+                "GPU 环境请核对硬件、驱动和 PyTorch 构建，耗时在当前设备实测。",
+                torch.__version__, torch.version.cuda,
             )
         else:
             logger.info(f"使用 GPU 推理: {torch.cuda.get_device_name(0)}")

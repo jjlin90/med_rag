@@ -58,7 +58,7 @@ python main.py
 # 交互式问答测试
 python scripts/test_query_pipeline.py
 
-# Milvus 体检：验证子块过滤是否下推（秒级静态体检；加 --with-search 走端到端）
+# Milvus 体检：验证子块过滤是否下推（连接集合并检查类型；加 --with-search 验证实际检索）
 python scripts/check_chunk_type_filter.py
 python scripts/check_chunk_type_filter.py --with-search --query "一型糖尿病和二型糖尿病有什么区别"
 
@@ -68,11 +68,13 @@ python scripts/test_degrade_policy.py
 
 启动后访问 `http://localhost:8005/docs` 看接口文档。
 
-## 没有模型/数据库？先用简化版
+## 先验证环境和处理流程
 
 ```bash
-python scripts/simple_offline_ingest.py   # 不需要向量模型
-python scripts/simple_query_test.py       # 不需要 LLM API
+python -m unittest discover -s tests -v   # 模拟外部服务的边界回归
+python scripts/audit_static.py            # 源码、链接与安装依赖核查
+python scripts/simple_offline_ingest.py    # 简化处理示例
+python scripts/simple_query_test.py        # 省略 LLM 生成，仍需本地模型与 Milvus
 ```
 
 ## 常见问题

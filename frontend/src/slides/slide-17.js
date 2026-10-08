@@ -8,7 +8,7 @@ window.slideDataMap.set(17, `
     <div class="text-center">
       <div class="font-mono text-4xl text-cyan-400 mb-6">&lt;/ END &gt;</div>
       <h1 class="font-title text-7xl font-bold text-white mb-5">谢谢观看</h1>
-      <p class="text-2xl text-indigo-200 mb-10">权威知识库 + RAG = 可信医疗科普</p>
+      <p class="text-2xl text-indigo-200 mb-10">本地医学资料 + 检索依据 + 质量评测</p>
       <div class="flex items-center justify-center gap-3 px-8 py-3 border border-cyan-500/40 rounded-full bg-slate-800/40 backdrop-blur">
         <span class="font-mono text-cyan-300 text-sm">FastAPI</span>
         <span class="text-slate-600">·</span>

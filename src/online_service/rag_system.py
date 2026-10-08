@@ -86,6 +86,14 @@ class RAGSystem:
 
         # 1. 意图分类：通用知识 / 专业咨询
         intent_result = self.intent_classifier.predict(query)
+        if intent_result.get('error') or intent_result.get('intent') not in {'general', 'medical'}:
+            logger.error('Intent classification unavailable: %s', intent_result.get('error'))
+            return {
+                'answer': SERVICE_UNAVAILABLE_ANSWER, 'intent': 'medical',
+                'strategy': strategy or 'direct', 'sources': [], 'confidence': 0.0,
+                'degraded': True, 'degrade_level': DEGRADE_L2,
+                'degrade_reason': 'intent_classifier_unavailable',
+            }
         intent = intent_result.get("intent", "medical")
         confidence = intent_result.get("confidence", 0.0)
         logger.info(f"查询分类结果: {intent}")
@@ -348,8 +356,8 @@ class RAGSystem:
         """
         将排序后的父块拼接为 LLM 上下文（对齐 EduRag "Top-2 父块 → 拼上下文"）。
 
-        Small-to-Big 链路保证传入的是父块（~1200-2000字，上下文完整），
-        默认取 Top-2 精排后的父块拼装即可。
+        L0 使用父正文（缺失时回退子正文），L1 使用子片段。
+        默认拼接精排后的 Top-2 上下文。
         """
         if not documents:
             return "未找到相关医学知识。"

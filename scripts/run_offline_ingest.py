@@ -47,11 +47,12 @@ def setup_directories(config: Config):
     (project_root / 'logs').mkdir(exist_ok=True)
 
 
-def validate_config(config: Config) -> bool:
+def validate_config(config: Config, data_dir: Optional[Path] = None) -> bool:
     """验证配置"""
-    # 检查原始数据目录
-    if not config.RAW_MSD_DIR.exists():
-        logger.error(f"原始数据目录不存在: {config.RAW_MSD_DIR}")
+    # 入库读取清洗文档或用户指定目录；HTML 原始目录只供抽取脚本使用。
+    source_dir = data_dir if data_dir is not None else config.CLEAN_MD_DIR
+    if not source_dir.is_dir():
+        logger.error(f"文档目录不存在或不是目录: {source_dir}")
         return False
 
     # 检查模型目录
@@ -186,7 +187,7 @@ def main():
         setup_directories(config)
 
         # 3. 验证配置
-        if not validate_config(config):
+        if not validate_config(config, data_dir=args.data_dir):
             logger.error("配置验证失败，退出")
             raise SystemExit(1)
 

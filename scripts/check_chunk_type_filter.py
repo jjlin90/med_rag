@@ -57,7 +57,7 @@ def hr(title: str = ""):
 
 
 def count_by_expr(collection, expr: str) -> int:
-    """按过滤表达式统计实体数（优先 count(*)，失败则退化为拉取 id 计数）。"""
+    """统计全部匹配记录；旧服务使用分页迭代，避免 16384 条截断。"""
     try:
         res = collection.query(expr=expr, output_fields=["count(*)"])
         if res and isinstance(res[0], dict):
@@ -65,12 +65,20 @@ def count_by_expr(collection, expr: str) -> int:
             for k, v in res[0].items():
                 if "count" in k.lower():
                     return int(v)
-        return len(res)
+        raise ValueError('count(*) response has no count field')
     except Exception as e:
         logger.debug("count(*) 不可用(%s)，退化为 id 计数", e)
         try:
-            res = collection.query(expr=expr, output_fields=["id"], limit=16384)
-            return len(res)
+            iterator = collection.query_iterator(expr=expr, output_fields=['id'], batch_size=1000)
+            try:
+                total = 0
+                while True:
+                    batch = iterator.next()
+                    if not batch:
+                        return total
+                    total += len(batch)
+            finally:
+                iterator.close()
         except Exception as e2:
             logger.warning("统计失败 expr=%s : %s", expr, e2)
             return -1
@@ -111,9 +119,9 @@ def main():
 
     has_ct = store.has_chunk_type_field()
     if has_ct:
-        print(f"{OK}schema 含顶层 chunk_type 字段 → 过滤表达式 chunk_type == 'child'")
-        child_expr = "chunk_type == 'child'"
-        parent_expr = "chunk_type == 'parent'"
+        print(f"{OK}schema 含顶层 chunk_type 字段")
+        child_expr = store.child_filter_expr()
+        parent_expr = "chunk_type == 'parent' and parent_id == ''"
     else:
         print(f"{WARN}schema 无顶层 chunk_type 字段（旧库）")
         print("       → 过滤退化为 parent_id != ''（语义等价，父块 parent_id 恒为空串）")
@@ -126,6 +134,11 @@ def main():
     n_parent = count_by_expr(collection, parent_expr)
     print(f"  子块(child): {n_child}")
     print(f"  父块(parent): {n_parent}")
+
+    if n_child < 0 or n_parent < 0:
+        problems.append('父子块统计失败')
+    elif n_child + n_parent != total:
+        problems.append('类型、父子关联与实体总数不一致')
 
     if n_child <= 0:
         print(f"{BAD}库中没有子块！Small-to-Big 完全无法工作。")
@@ -142,7 +155,7 @@ def main():
     try:
         samples = collection.query(
             expr=child_expr,
-            output_fields=["id", "parent_id", "text"],
+            output_fields=["id", "parent_id", "parent_content", "text"],
             limit=1)
         if samples:
             s = samples[0]
@@ -157,8 +170,11 @@ def main():
                 problems.append("子块 parent_id 为空")
             else:
                 print(f"{OK}子块 parent_id 非空，可正常回溯")
+            if not (s.get('parent_content') or '').strip():
+                problems.append('样例子块缺少父正文')
     except Exception as e:
         logger.warning("抽样失败: %s", e)
+        problems.append('子块抽样失败')
 
     hr("3. 下推过滤表达式")
     print(f"  实际生效表达式: {store.child_filter_expr()}")
@@ -189,7 +205,10 @@ def main():
     print(f"  查询: {q!r}")
 
     print("\n  --- 未加子块过滤（修复前的行为）---")
-    raw = retrieval.search(q, use_hybrid=True, only_children=False)
+    raw_status = {}
+    raw = retrieval.search(q, use_hybrid=True, only_children=False, status=raw_status)
+    if raw_status.get('error'):
+        problems.append('未过滤检索失败')
     raw_parents = [r for r in raw if not r.get("parent_id")]
     print(f"  召回 {len(raw)} 条，其中父块 {len(raw_parents)} 条、子块 "
           f"{len(raw) - len(raw_parents)} 条")
@@ -199,7 +218,10 @@ def main():
               f"（槽位浪费率 {wasted / max(len(raw), 1):.0%}）")
 
     print("\n  --- 下推子块过滤（修复后的行为）---")
-    kids = retrieval.search(q, use_hybrid=True, only_children=True)
+    child_status = {}
+    kids = retrieval.search(q, use_hybrid=True, only_children=True, status=child_status)
+    if child_status.get('error'):
+        problems.append('子块过滤检索失败')
     bad = [r for r in kids if not r.get("parent_id")]
     print(f"  召回 {len(kids)} 条，其中无 parent_id 的异常项 {len(bad)} 条")
     if bad:
@@ -209,6 +231,7 @@ def main():
         print(f"{OK}全部 {len(kids)} 条均为子块，过滤下推生效")
     else:
         print(f"{WARN}子块召回为空，请确认知识库内容与过滤表达式")
+        problems.append('子块过滤检索无召回')
 
     print("\n  --- Small-to-Big 完整链路 ---")
     rr = retrieval.search_child_to_parent(q)
@@ -217,6 +240,8 @@ def main():
     if rr.degraded:
         print(f"  {WARN}降级水位 L{rr.degrade_level} ({rr.degrade_reason})"
               + (f"，错误：{rr.error}" if rr.error else ""))
+    if rr.error or rr.degrade_level >= 2:
+        problems.append(f'Small-to-Big 检索故障或不可用: {rr.degrade_reason}')
 
     for i, p in enumerate(parents[:3], 1):
         print(f"    [{i}] id={p.get('id')}  块长度={len(p.get('content') or '')} 字符  "
@@ -224,17 +249,13 @@ def main():
 
     if parents:
         avg_len = sum(len(p.get("content") or "") for p in parents) / len(parents)
-        if rr.degrade_level >= 1:
+        if rr.degrade_level == 1:
             # L1 降级返回的是内存切片的子块（~400 字），长度偏小是预期行为，
             # 不能沿用「父块长度 < 500 即异常」的判据，否则会误报。
             print(f"{OK}L1 降级产出 {len(parents)} 条子块，平均长度 {avg_len:.0f} 字符"
                   f"（粒度未退化，符合预期）")
         else:
             print(f"{OK}回溯成功，父块平均长度 {avg_len:.0f} 字符")
-            if avg_len < 500:
-                print(f"{WARN}父块平均长度偏小，疑似 parent_content 未写入，"
-                      f"实际返回的是子块原文")
-                problems.append("parent_content 疑似未写入")
     elif rr.degrade_level >= 2:
         print(f"{BAD}Small-to-Big 无输出（降级水位 L{rr.degrade_level}）")
         problems.append(f"Small-to-Big 无输出: {rr.degrade_reason}")

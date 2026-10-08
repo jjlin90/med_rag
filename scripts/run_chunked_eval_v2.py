@@ -9,7 +9,7 @@ v1 的问题（实测教训）：
 
 v2 改进：
   - 小块化：默认每块 25 条（留安全余量，避免烧穿）
-  - 零分过滤：合并时剔除全零样本，只在"有效样本"上算均值
+  - 有效值校验：保留真实全零样本，缺失、越界或非数值项继续补评
   - 按题续跑：已拿到有效分的样本直接跳过，不重复烧额度
   - 失败追补：某块因额度耗尽失败，自动用下一个模型补跑剩余样本
 
@@ -68,6 +68,7 @@ VERIFIED_MODELS = [
 def is_valid(score_row: dict) -> bool:
     """四项均为有限的 0~1 分数才完整；真实零分保留，缺失项需补评。"""
     return all(isinstance(score_row.get(k), (int, float))
+               and not isinstance(score_row[k], bool)
                and math.isfinite(score_row[k]) and 0 <= score_row[k] <= 1 for k in METRICS)
 
 
@@ -166,17 +167,19 @@ def merge_results(collected: dict, meta_list: list) -> dict:
     avg = {}
     for k in METRICS:
         vals = [s[k] for s in all_scores
-                if isinstance(s.get(k), (int, float)) and math.isfinite(s[k])]
-        avg[k] = round(sum(vals) / len(vals), 4) if vals else 0.0
+                if isinstance(s.get(k), (int, float)) and not isinstance(s[k], bool)
+                and math.isfinite(s[k]) and 0 <= s[k] <= 1]
+        avg[k] = sum(vals) / len(vals) if vals else None
 
-    weighted = sum(avg[k] for k in METRICS) / len(METRICS)
+    weighted = (sum(avg[k] for k in METRICS) / len(METRICS)
+                if all(avg[k] is not None for k in METRICS) else None)
     return {
         "engine": "ragas",
         "total": len(all_scores),
         "metrics": METRICS,
         "has_ground_truth": True,
-        "average": avg,
-        "weighted_composite": round(weighted, 4),
+        "average": {k: round(v, 4) if v is not None else None for k, v in avg.items()},
+        "weighted_composite": round(weighted, 4) if weighted is not None else None,
         "scores": all_scores,
         "_chunks_meta": meta_list,
     }
@@ -187,11 +190,13 @@ def save_final(result: dict):
     FINAL_JSON.write_text(json.dumps(result, ensure_ascii=False, indent=2),
                           encoding="utf-8")
     print(f"\n最终 JSON: {FINAL_JSON}")
+    if result.get("error"):
+        return
     try:
         import pandas as pd
-        rows = [{k: s.get(k, 0.0) for k in METRICS} | {"question": s.get("question", "")}
+        rows = [{k: s.get(k) for k in METRICS} | {"question": s.get("question", "")}
                 for s in result["scores"]]
-        avg_row = {k: result["average"].get(k, 0.0) for k in METRICS} | {"question": "__average__"}
+        avg_row = {k: result["average"].get(k) for k in METRICS} | {"question": "__average__"}
         rows.append(avg_row)
         pd.DataFrame(rows, columns=["question"] + METRICS).to_csv(
             FINAL_CSV, index=False, encoding="utf-8-sig")
@@ -201,10 +206,13 @@ def save_final(result: dict):
 
 
 def print_summary(result: dict):
+    if result.get("error"):
+        print(f"\n无法汇总：{result['error']}")
+        return
     avg = result.get("average", {})
     meta = result.get("_chunks_meta", [])
     print(f"\n{'='*72}")
-    print(f"  最终评估结果 — {result.get('total', 0)} 条有效样本")
+    print(f"  最终评估结果 — {result.get('total', 0)} 条样本")
     print(f"{'='*72}")
     for m in meta:
         print(f"  {m.get('model', '?'):<24} "
@@ -212,11 +220,16 @@ def print_summary(result: dict):
               f"{m.get('elapsed_seconds', 0):>5.0f}s")
     print(f"  {'-'*56}")
     for k in METRICS:
-        v = avg.get(k, 0)
+        v = avg.get(k)
+        if v is None:
+            print(f"  {k:<22}  缺失")
+            continue
         bar = "█" * int(v * 36) + "░" * (36 - int(v * 36))
         print(f"  {k:<22}  {v:.4f}  {bar}")
     print(f"  {'-'*56}")
-    print(f"  {'等权加权综合':<22}  {result.get('weighted_composite', 0):.4f}")
+    composite = result.get('weighted_composite')
+    value = f"{composite:.4f}" if composite is not None else "缺失"
+    print(f"  {'等权加权综合':<22}  {value}")
     print(f"{'='*72}")
 
 

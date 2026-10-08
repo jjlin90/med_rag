@@ -11,6 +11,19 @@ except ImportError:
 
 @unittest.skipIf(AppTest is None, 'Install the demo extra to test Streamlit')
 class StreamlitTests(unittest.TestCase):
+    def test_degraded_answer_has_visible_status(self):
+        response = Mock()
+        response.json.return_value = {'status': 'healthy', 'services': {}, 'history': []}
+        answer = Mock()
+        answer.json.return_value = {'answer': '原文摘录', 'sources': [], 'degraded': True,
+                                     'degrade_level': 2, 'confidence': 0.0}
+        path = Path(__file__).resolve().parents[1] / 'web_demo/app.py'
+        with patch('requests.get', return_value=response), patch('requests.post', return_value=answer):
+            app = AppTest.from_file(str(path)).run(timeout=20)
+            app.chat_input[0].set_value('问题').run(timeout=20)
+            self.assertEqual(len(app.exception), 0)
+            self.assertTrue(any('降级状态' in warning.value for warning in app.warning))
+
     def test_evaluation_renders_actual_metric_keys_and_missing_values(self):
         def get(url, **kwargs):
             response = Mock()

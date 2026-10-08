@@ -62,7 +62,7 @@ class QueryResponse(BaseModel):
     # 降级透明化：任何一次降级都必须让调用方可见。
     # 静默降级比直接失败更危险——前端和用户会以为这是正常质量的答案。
     degraded: bool = False
-    degrade_level: int = 0     # 0=正常 1=同粒度降级（安全，质量未降） 2=无召回或服务故障
+    degrade_level: int = 0     # 0=正常 1=备用检索且保持子块粒度 2=无召回或服务故障
     degrade_reason: str = ""
 
 class HealthResponse(BaseModel):

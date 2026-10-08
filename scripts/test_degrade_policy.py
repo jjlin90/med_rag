@@ -133,7 +133,7 @@ def test_l1_fallback():
         check("每条切片保留 parent_content",
               all(d.get('parent_content') for d in res))
         # 候选规模受控：降级路径不能比主路径更贵（reranker 开销恒定）
-        check("候选总量 ≤ top_k_retrieve（精排开销不膨胀）",
+        check("L1 候选总量 ≤ top_k_retrieve",
               len(res) <= r.top_k_retrieve,
               f"{len(res)} 条 ≤ {r.top_k_retrieve}")
         # 实际进 LLM 的只有 reranker 输出的 Top-2，约 800 字，远小于 L0 的 4000 字

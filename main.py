@@ -50,9 +50,9 @@ def process_data_mode(config: Config, data_dir: Path) -> None:
     )
 
     setup_directories(config)
-    if not validate_config(config):
+    if not validate_config(config, data_dir=data_dir):
         print("配置验证失败，退出")
-        return
+        raise SystemExit(1)
 
     process_documents(config, data_dir=data_dir)
 
@@ -143,7 +143,7 @@ def main() -> None:
         "--session-id",
         type=str,
         default=None,
-        help="指定会话 ID（用于跨会话恢复对话历史）",
+        help="指定会话 ID（用于保存历史记录）",
     )
     args = parser.parse_args()
 

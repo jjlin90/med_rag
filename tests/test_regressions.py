@@ -133,6 +133,43 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ChunkSplitter(SimpleNamespace(PARENT_CHUNK_SIZE=20, CHILD_CHUNK_SIZE=8, CHUNK_OVERLAP=8))
 
+    def test_collection_count_fallback_is_not_truncated(self):
+        from scripts.check_chunk_type_filter import count_by_expr
+        collection = Mock()
+        collection.query.side_effect = RuntimeError('unsupported count')
+        iterator = collection.query_iterator.return_value
+        iterator.next.side_effect = [[{'id': 'x'}] * 1000] * 17 + [[]]
+        self.assertEqual(count_by_expr(collection, 'parent_id != ""'), 17000)
+        iterator.close.assert_called_once()
+
+    def test_split_failure_stops_ingestion(self):
+        splitter = ChunkSplitter(SimpleNamespace(PARENT_CHUNK_SIZE=20, CHILD_CHUNK_SIZE=8, CHUNK_OVERLAP=2))
+        splitter._split_into_parent_chunks = Mock(side_effect=RuntimeError('invalid document'))
+        with self.assertRaisesRegex(RuntimeError, 'invalid document'):
+            splitter.split_documents([Document('text', {'file_path': 'bad.md'})])
+
+    def test_ingestion_validates_actual_selected_directory(self):
+        from scripts import run_offline_ingest as ingestion
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'src/models/bge-m3').mkdir(parents=True)
+            selected = root / 'selected'
+            selected.mkdir()
+            config = SimpleNamespace(CLEAN_MD_DIR=root / 'missing-default')
+            with patch.object(ingestion, 'project_root', root):
+                self.assertTrue(ingestion.validate_config(config, selected))
+                self.assertFalse(ingestion.validate_config(config))
+
+    def test_cli_ingestion_validation_failure_has_nonzero_exit(self):
+        import main
+        with patch('scripts.run_offline_ingest.setup_directories'), \
+             patch('scripts.run_offline_ingest.validate_config', return_value=False), \
+             patch('scripts.run_offline_ingest.process_documents') as process:
+            with self.assertRaises(SystemExit) as error:
+                main.process_data_mode(Mock(), Path('missing'))
+            self.assertEqual(error.exception.code, 1)
+            process.assert_not_called()
+
     def test_legacy_chunk_type_repaired_in_memory(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'chunks.json'
@@ -219,6 +256,16 @@ class RegressionTests(unittest.TestCase):
         core.llm_generator.generate_with_context.return_value = None
         self.assertEqual(core.generate('q')['degrade_level'], 2)
 
+    def test_classifier_failure_stops_generation(self):
+        for prediction in [{'error': 'offline'}, {}, {'intent': 'unknown'}]:
+            core = self.make_core(RetrievalResult())
+            core.intent_classifier.predict.return_value = prediction
+            result = core.generate('q', strategy='direct')
+            self.assertEqual(result['degrade_reason'], 'intent_classifier_unavailable')
+            self.assertEqual(result['degrade_level'], 2)
+            core._retrieve_and_merge.assert_not_called()
+            core.llm_generator.generate_with_context.assert_not_called()
+
     def make_api(self):
         api = RAGWebAPI.__new__(RAGWebAPI)
         api.cache = Mock()
@@ -286,12 +333,48 @@ class RegressionTests(unittest.TestCase):
                 reranker.rerank('q', [{'content': 'text'}])
 
     def test_failed_judge_scores_not_zero(self):
-        for raw in [None, 'invalid', '{"faithfulness": "NaN"}', '{"faithfulness": 2}']:
+        for raw in [None, 'invalid', '{"faithfulness": "NaN"}', '{"faithfulness": 2}', '{"faithfulness": true}']:
             self.assertIsNone(RAGEvaluator._parse(raw)['faithfulness'])
         self.assertEqual(RAGEvaluator._parse('{"faithfulness": 0}')['faithfulness'], 0)
         average = RAGEvaluator._aggregate([{'faithfulness': None}, {'faithfulness': .8}])
         self.assertEqual(average['faithfulness'], .8)
         self.assertIsNone(average['answer_relevancy'])
+
+    def test_ragas_scores_validate_range_and_requested_columns(self):
+        import pandas as pd
+        evaluator = RAGEvaluator.__new__(RAGEvaluator)
+        evaluator._build_llm = Mock()
+        evaluator._build_embeddings = Mock()
+        items = evaluator._normalize([{'question': 'q', 'answer': 'a',
+                                      'contexts': ['text'], 'ground_truth': 'truth'}])
+        for score in [True, -0.1, 1.1, float('inf'), float('nan'), 0.0]:
+            result = Mock()
+            result.to_pandas.return_value = pd.DataFrame({'faithfulness': [score],
+                                                         'answer_relevancy': [.5]})
+            with patch('ragas.evaluate', return_value=result):
+                report = evaluator._evaluate_ragas(items)
+            self.assertEqual(len(report['metrics']), 4)
+            self.assertEqual(report['complete_count'], 0)
+            self.assertIsNone(report['average']['context_recall'])
+            self.assertEqual(report['valid_counts']['context_precision'], 0)
+            if score == 0.0 and not isinstance(score, bool):
+                self.assertEqual(report['average']['faithfulness'], 0.0)
+            else:
+                self.assertIsNone(report['average']['faithfulness'])
+
+    def test_ragas_missing_all_columns_keeps_missing_scores(self):
+        import pandas as pd
+        evaluator = RAGEvaluator.__new__(RAGEvaluator)
+        evaluator._build_llm = Mock()
+        evaluator._build_embeddings = Mock()
+        result = Mock()
+        result.to_pandas.return_value = pd.DataFrame({'user_input': ['q']})
+        with patch('ragas.evaluate', return_value=result):
+            report = evaluator._evaluate_ragas(evaluator._normalize([{'question': 'q', 'answer': 'a'}]))
+        self.assertEqual(report['engine'], 'ragas')
+        self.assertEqual(report['metrics'], ['faithfulness', 'answer_relevancy'])
+        self.assertEqual(report['valid_counts'], dict.fromkeys(report['metrics'], 0))
+        self.assertEqual(report['complete_count'], 0)
 
     def test_evaluate_accepts_reference_alias(self):
         self.assertEqual(EvaluateItem(question='q', answer='a', reference_answer='truth').ground_truth, 'truth')
@@ -331,6 +414,111 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue(valid(zero))
             self.assertFalse(valid({**zero, 'context_recall': None}))
             self.assertFalse(valid({**zero, 'context_recall': float('nan')}))
+            self.assertFalse(valid({**zero, 'context_recall': True}))
+
+    def test_composite_rounds_once_from_original_scores(self):
+        from scripts.run_parallel_eval import merge_results, METRICS
+        from scripts.run_chunked_eval_v2 import merge_results as merge_v2
+        scores = dict(zip(METRICS, [.8163338095238095, .5006771428571428,
+                                  .8404761904761905, .7619047619047619]))
+        for merge in (merge_results, merge_v2):
+            self.assertEqual(merge({'q': scores}, [])['weighted_composite'], .7298)
+
+    def test_evaluation_merge_missing_column_roundtrips_without_zero_fill(self):
+        import csv
+        import importlib
+        import io
+        from contextlib import redirect_stdout
+        for name in ('scripts.run_parallel_eval', 'scripts.run_chunked_eval_v2'):
+            module = importlib.import_module(name)
+            cases = [
+                ({'q': dict.fromkeys(module.METRICS, 0.0)}, 0.0, 0.0),
+                ({'q': dict.fromkeys(module.METRICS, .5),
+                  'partial': {'faithfulness': None, 'answer_relevancy': .5,
+                              'context_precision': .5, 'context_recall': .5}}, .5, .5),
+                ({'q': {'faithfulness': .5, 'answer_relevancy': .5,
+                        'context_precision': .5}}, None, None),
+                ({'q': dict.fromkeys(module.METRICS, None)}, None, None),
+            ]
+            for collected, recall, composite in cases:
+                with self.subTest(module=name, collected=collected), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    report = module.merge_results(collected, [])
+                    self.assertEqual(report['average']['context_recall'], recall)
+                    self.assertEqual(report['weighted_composite'], composite)
+                    with patch.object(module, 'FINAL_JSON', root / 'report.json'), \
+                         patch.object(module, 'FINAL_CSV', root / 'report.csv'), \
+                         redirect_stdout(io.StringIO()) as output:
+                        module.save_final(report)
+                        module.print_summary(report)
+                    self.assertEqual(json.loads((root / 'report.json').read_text(encoding='utf-8'))['weighted_composite'], composite)
+                    with (root / 'report.csv').open(encoding='utf-8-sig', newline='') as source:
+                        average = list(csv.DictReader(source))[-1]
+                    self.assertEqual(average['context_recall'], '' if recall is None else str(recall))
+                    if composite is None:
+                        self.assertIn('缺失', output.getvalue())
+
+    def test_evaluation_merge_rejects_invalid_scores_and_displays_empty_result(self):
+        import importlib
+        import io
+        from contextlib import redirect_stdout
+        for name in ('scripts.run_parallel_eval', 'scripts.run_chunked_eval_v2'):
+            module = importlib.import_module(name)
+            for invalid in (True, -0.1, 1.1, float('nan'), float('inf')):
+                with self.subTest(module=name, invalid=invalid):
+                    report = module.merge_results({'q': {**dict.fromkeys(module.METRICS, .5),
+                                                        'faithfulness': invalid}}, [])
+                    self.assertIsNone(report['average']['faithfulness'])
+                    self.assertIsNone(report['weighted_composite'])
+            with tempfile.TemporaryDirectory() as directory, \
+                 patch.object(module, 'FINAL_JSON', Path(directory) / 'empty.json'), \
+                 patch.object(module, 'FINAL_CSV', Path(directory) / 'empty.csv'), \
+                 redirect_stdout(io.StringIO()) as output:
+                report = module.merge_results({}, [])
+                module.save_final(report)
+                module.print_summary(report)
+                self.assertIn(report['error'], output.getvalue())
+                self.assertNotIn('0.0000', output.getvalue())
+
+    def test_legacy_chunk_merge_retains_missing_scores(self):
+        from scripts.run_chunked_eval import merge_results
+        report = merge_results([{'engine': 'ragas', 'metrics': ['faithfulness', 'answer_relevancy'],
+                                 'scores': [{'question': 'q', 'faithfulness': 0.0, 'answer_relevancy': True}]}])
+        self.assertEqual(report['average']['faithfulness'], 0.0)
+        self.assertIsNone(report['average']['answer_relevancy'])
+        self.assertEqual(report['valid_counts']['answer_relevancy'], 0)
+        self.assertEqual(report['complete_count'], 0)
+
+    def test_retry_merge_preserves_missing_zero_and_engine_contract(self):
+        from scripts.merge_eval_retries import main, valid
+        from contextlib import redirect_stdout
+        import io
+        from scripts.run_parallel_eval import METRICS
+        for score in [True, float('nan'), -0.1, 1.1]:
+            self.assertFalse(valid(score))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {'engine': 'ragas', 'metrics': METRICS,
+                    'scores': [{'question': 'q', **dict.fromkeys(METRICS, None)}],
+                    'evaluation_config': {'judge_model': 'primary'}}
+            (root / 'base.json').write_text(json.dumps(base))
+            retry = {'engine': 'ragas', 'scores': [{'question': 'q', 'faithfulness': 0.0}]}
+            (root / 'retry.json').write_text(json.dumps(retry))
+            argv = ['merge', '--base', str(root / 'base.json'), '--retry', str(root / 'retry.json'),
+                    '--retry-judge', 'retry', '--out-json', str(root / 'out.json'),
+                    '--out-csv', str(root / 'nested/out.csv')]
+            with patch('sys.argv', argv), redirect_stdout(io.StringIO()):
+                main()
+            report = json.loads((root / 'out.json').read_text())
+            self.assertEqual(report['average']['faithfulness'], 0.0)
+            self.assertIsNone(report['average']['answer_relevancy'])
+            self.assertIsNone(report['composite'])
+            self.assertEqual(report['complete_count'], 0)
+            self.assertEqual(report['metric_judge_counts']['faithfulness'], {'primary': 0, 'retry': 1})
+            retry['engine'] = 'llm_judge_fallback'
+            (root / 'retry.json').write_text(json.dumps(retry))
+            with patch('sys.argv', argv), self.assertRaisesRegex(ValueError, 'Ragas engine'):
+                main()
 
     def test_html_extraction_preserves_medical_text(self):
         from scripts.extract_msd import clean_msd_html

@@ -25,6 +25,7 @@ import logging
 import math
 import os
 import re
+from numbers import Real
 from typing import List, Dict, Any, Optional
 
 from ..config.settings import Config
@@ -33,6 +34,12 @@ from ..offline_pipeline.embedding_provider import BGEEmbeddingProvider
 # Ragas 0.2.x 输出的规范字段名（evaluate 会把 v1 的 question/answer/contexts/ground_truth
 # 转换成以下规范列，提取指标时需排除这些非指标列）。
 RAGAS_NON_METRIC_COLS = {"user_input", "response", "retrieved_contexts", "reference"}
+
+
+def valid_metric_score(value) -> bool:
+    """A real score is finite, in [0, 1], and never a boolean."""
+    return (isinstance(value, Real) and not isinstance(value, bool)
+            and math.isfinite(value) and 0 <= value <= 1)
 
 logger = logging.getLogger(__name__)
 
@@ -236,10 +243,11 @@ class RAGEvaluator:
             raise_exceptions=False,
         )
 
-        metric_keys, rows = self._extract(result)
-        if not metric_keys:
-            logger.warning("Ragas 未返回有效指标，转内置 LLM-as-judge 降级。")
-            return self._evaluate_fallback(items)
+        _, rows = self._extract(result)
+        # Report every requested metric even if the provider omitted a whole column.
+        metric_keys = ['faithfulness', 'answer_relevancy']
+        if has_gt:
+            metric_keys.extend(['context_precision', 'context_recall'])
 
         scores = []
         for i, it in enumerate(items):
@@ -249,7 +257,7 @@ class RAGEvaluator:
                 # Ragas 的 API/解析失败通常表现为 NaN。保留为 null，不能把
                 # “没评出来”伪装成质量 0 分并拖低均值。
                 row[k] = (round(float(v), 4)
-                          if isinstance(v, (int, float)) and math.isfinite(v)
+                          if valid_metric_score(v)
                           else None)
             scores.append(row)
 
@@ -257,13 +265,13 @@ class RAGEvaluator:
         valid_counts = {}
         for k in metric_keys:
             vals = [r[k] for r in scores
-                     if isinstance(r[k], (int, float)) and math.isfinite(r[k])]
+                     if valid_metric_score(r[k])]
             valid_counts[k] = len(vals)
             avg[k] = round(sum(vals) / len(vals), 4) if vals else None
 
         complete_count = sum(
             1 for r in scores
-            if all(isinstance(r[k], (int, float)) and math.isfinite(r[k])
+            if all(valid_metric_score(r[k])
                    for k in metric_keys)
         )
 
@@ -321,6 +329,7 @@ class RAGEvaluator:
             "engine": "llm_judge_fallback",
             "total": len(items),
             "metrics": ["faithfulness", "context_precision", "answer_relevancy"],
+            "has_ground_truth": all(bool(it['ground_truth']) for it in items),
             "average": avg,
             "valid_counts": valid_counts,
             "complete_count": sum(all(row.get(k) is not None for k in metrics) for row in scores),
@@ -381,9 +390,11 @@ class RAGEvaluator:
             data = json.loads(cleaned)
 
             def to_score(v):
+                if isinstance(v, bool):
+                    return None
                 try:
                     value = float(v)
-                    return value if math.isfinite(value) and 0 <= value <= 1 else None
+                    return value if valid_metric_score(value) else None
                 except (TypeError, ValueError):
                     return None
 
@@ -403,6 +414,6 @@ class RAGEvaluator:
         result = {}
         for key in ('faithfulness', 'context_precision', 'answer_relevancy'):
             values = [row.get(key) for row in scores
-                      if isinstance(row.get(key), (int, float)) and math.isfinite(row[key])]
+                      if valid_metric_score(row.get(key))]
             result[key] = round(sum(values) / len(values), 4) if values else None
         return result

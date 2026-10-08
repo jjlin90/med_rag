@@ -1,0 +1,17 @@
+include README.md GETTING_STARTED.md requirements.txt uv.lock .env.example run_api_safe.ps1
+recursive-include docs *.md *.html
+include web_demo/app.py web_demo/README.md web_demo/run_streamlit.bat
+include frontend/package.json frontend/package-lock.json frontend/yarn.lock
+include frontend/index.html frontend/404.html frontend/README.md
+include frontend/vite.config.js frontend/tailwind.config.js frontend/postcss.config.js
+recursive-include frontend/src *.js *.css
+recursive-include frontend/scripts *.js
+recursive-include frontend/public *.svg
+prune artifacts
+prune data
+prune src/models
+prune web_demo/.venv
+prune frontend/node_modules
+prune frontend/dist
+prune frontend/dist-slides
+global-exclude __pycache__ *.py[cod] *.log
