@@ -6,11 +6,11 @@ window.slideDataMap.set(10, `
     <div class="mb-6 flex items-center gap-4">
       <div class="w-12 h-1 bg-cyan-400"></div>
       <h1 class="font-title text-4xl font-bold text-white">策略与重排</h1>
-      <span class="ml-2 text-slate-400 text-lg font-light">为什么检索得准</span>
+      <span class="ml-2 text-slate-400 text-lg font-light">混合召回与证据排序</span>
     </div>
     <div class="grid grid-cols-2 gap-6 flex-1">
       <div class="bg-slate-800/40 border border-cyan-500/30 rounded-xl p-6">
-        <h3 class="text-xl font-bold text-cyan-300 mb-4">四种检索策略（LLM 自动选）</h3>
+        <h3 class="text-xl font-bold text-cyan-300 mb-4">四种检索策略（显式指定优先）</h3>
         <div class="grid grid-cols-2 gap-4">
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400"><p class="text-white font-semibold">direct</p><p class="text-slate-400 text-sm mt-1">直接向量检索</p></div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-cyan-400"><p class="text-white font-semibold">hyde</p><p class="text-slate-400 text-sm mt-1">假设性文档增强</p></div>
@@ -27,11 +27,11 @@ window.slideDataMap.set(10, `
           </div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-indigo-400">
             <p class="text-white font-semibold mb-1">混合检索</p>
-            <p class="text-slate-400 text-sm">dense（语义）+ sparse（关键词）+ multi-vector 三者融合，提升医学同义表述召回。</p>
+            <p class="text-slate-400 text-sm">dense（语义）+ sparse（词项权重）两路检索，由 WeightedRanker 按 1.0 / 0.7 加权融合；ColBERT 关闭。</p>
           </div>
           <div class="bg-slate-900/40 rounded-lg p-4 border-l-4 border-emerald-400">
-            <p class="text-emerald-300 font-semibold">收益</p>
-            <p class="text-slate-400 text-sm">相比单向量 + 无重排，相关性 / 可信度显著提升。</p>
+            <p class="text-emerald-300 font-semibold">作用机制</p>
+            <p class="text-slate-400 text-sm">稠密向量覆盖语义表述，稀疏向量提供词项匹配，重排按问题与命中子证据的相关性排序。</p>
           </div>
         </div>
       </div>
