@@ -33,12 +33,26 @@ ALLOWED_PATHS = (
     'scripts/audit_repository.py',
 )
 LINK = re.compile(r'!?\[[^\]]*\]\((<[^>]+>|(?:[^\s()]|\([^()]*\))+)(?:\s+["\x27][^\n]*?["\x27])?\)')
+RESTRICTED_SUFFIXES = {
+    '.pyc', '.log', '.docx', '.safetensors', '.pt', '.pth', '.gguf',
+    '.bin', '.onnx', '.h5', '.msgpack', '.tflite',
+}
+
+
+class AuditError(RuntimeError):
+    """只携带审计器定义的安全错误分类与说明，不携带输入内容。"""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 def git(root, *arguments, allowed_codes=(0,)):
-    result = subprocess.run(['git', *arguments], cwd=root, capture_output=True)
+    try:
+        result = subprocess.run(['git', *arguments], cwd=root, capture_output=True)
+    except OSError:
+        raise AuditError('git_unavailable', '无法启动Git；请检查Git安装及执行权限。') from None
     if result.returncode not in allowed_codes:
-        raise RuntimeError('Git核查失败：' + arguments[0])
+        raise AuditError('git_check_failed', 'Git核查失败；请确认--root指向可访问的Git源码工作区。')
     return result
 
 
@@ -69,6 +83,8 @@ def anchors(path):
 
 def audit(root=ROOT, scan_credentials=True):
     root = Path(root).resolve()
+    if not root.is_dir():
+        raise AuditError('root_unavailable', '源码根目录不存在或不可访问；请检查--root。')
     tracked = git(root, 'ls-files', '-z').stdout.decode('utf-8').split('\0')[:-1]
     docs = [name for name in tracked if name.lower().endswith('.md')
             and (root/name).is_file()]
@@ -100,7 +116,8 @@ def audit(root=ROOT, scan_credentials=True):
                 ignore_errors.append({'path': name, 'expected_ignored': expect})
     tracked_ignored = git(root, 'ls-files', '-ci', '--exclude-standard', '-z').stdout.decode('utf-8').split('\0')[:-1]
     restricted = [name for name in tracked
-                  if re.search(r'(^|/)(artifacts|data|node_modules|\.venv|\.workbuddy|\.mimosa)/|\.(pyc|log|docx|safetensors|pt|pth|gguf)$', name)
+                  if re.search(r'(^|/)(artifacts|data|node_modules|\.venv|\.workbuddy|\.mimosa)/', name)
+                  or Path(name).suffix.lower() in RESTRICTED_SUFFIXES
                   or Path(name).name.startswith('.env') and Path(name).name != '.env.example']
 
     credentials, credential_status = {}, 'skipped_by_option'
@@ -111,7 +128,7 @@ def audit(root=ROOT, scan_credentials=True):
         try:
             from dotenv import dotenv_values
         except ImportError:
-            raise RuntimeError('本地.env凭据核查需要python-dotenv；请安装项目依赖，或明确使用--skip-local-credentials仅检查文档和Git规则') from None
+            raise AuditError('dotenv_dependency_missing', '本地.env凭据核查需要python-dotenv；请安装项目依赖，或明确使用--skip-local-credentials。') from None
         for key, value in dotenv_values(env_path, interpolate=False).items():
             if (re.search(r'API_KEY|PASSWORD|TOKEN|SECRET', key, re.I)
                     and value and len(value) >= 8 and '${' not in value
@@ -139,14 +156,30 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT, help='含Git索引的源码仓库根目录')
     parser.add_argument('--output', type=Path, help='可选JSON报告路径，建议放在artifacts目录')
-    parser.add_argument('--skip-local-credentials', action='store_true', help='明确跳过本地.env凭据值比对，报告标明未检查')
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument('--skip-local-credentials', action='store_true', help='明确跳过本地.env凭据值比对，报告标明未检查')
+    credentials.add_argument('--require-local-credentials', action='store_true', help='CI门控：要求实际完成本地.env扫描且至少比对1个有效字面值，否则退出1')
     args = parser.parse_args()
     try:
         result = audit(args.root, not args.skip_local_credentials)
-    except (OSError, UnicodeError, RuntimeError):
-        # 不回显解析输入或异常中的文件内容，避免泄露凭据。
-        print('核查无法完成；请确认仓库可读、Git可用，以及本地.env存在时已安装python-dotenv。', file=sys.stderr)
+    except AuditError as exc:
+        print(f'核查无法完成 [{exc.code}]：{exc}', file=sys.stderr)
         return 2
+    except UnicodeError:
+        print('核查无法完成 [file_encoding_error]：文件不是可读取的UTF-8文本。', file=sys.stderr)
+        return 2
+    except OSError:
+        print('核查无法完成 [file_read_error]：文件读取失败；请检查文件访问权限。', file=sys.stderr)
+        return 2
+    except RuntimeError:
+        print('核查无法完成 [audit_runtime_error]：审计执行失败。', file=sys.stderr)
+        return 2
+    result['credentials_required'] = args.require_local_credentials
+    result['credential_scan_requirement_met'] = (
+        not args.require_local_credentials
+        or result['credential_scan_status'] == 'checked_local_literal_values'
+        and result['credential_values_checked'] > 0
+    )
     report = json.dumps(result, ensure_ascii=False, indent=2)
     print(report)
     if args.output:
@@ -154,9 +187,9 @@ def main():
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(report, encoding='utf-8')
         except OSError:
-            print('报告写入失败；请指定可写的输出路径。', file=sys.stderr)
+            print('报告写入失败 [report_write_error]：请指定可写的输出路径。', file=sys.stderr)
             return 2
-    return int(any(result[key] for key in (
+    return int(not result['credential_scan_requirement_met'] or any(result[key] for key in (
         'broken_links_or_anchors', 'ignore_errors', 'tracked_ignored',
         'tracked_restricted_files', 'local_credential_matches')))
 

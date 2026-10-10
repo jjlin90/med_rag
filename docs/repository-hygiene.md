@@ -26,11 +26,17 @@
 python scripts/audit_repository.py
 # 可选：把本次结果保存到忽略目录
 python scripts/audit_repository.py --output artifacts/repository_audit.json
+# CI要求实际完成凭据比对时使用；根目录.env须有至少1个符合条件的凭据字面值
+python scripts/audit_repository.py --require-local-credentials
 ```
 
 脚本核查所有已跟踪Markdown的本地文件与锚点、35项忽略/保留路径、被忽略规则覆盖的已跟踪文件及本地产物混入。核心检查只需要Python标准库和Git，无GPU、Docker、数据库或模型接口调用；Git索引提供检查范围，因此仅解压源码包时需用`--root`指向对应Git源码工作区。退出码0表示已执行检查通过，1表示发现问题，2表示检查无法完成。默认不修改文件，只有指定`--output`才写报告。
 
 若根目录存在`.env`，使用项目依赖python-dotenv解析，其中名称包含API_KEY/PASSWORD/TOKEN/SECRET、长度至少8的非占位字面值在已跟踪文件中逐字节比对；不展开变量引用，报告只给出命中文件与配置字段名，不输出凭据值。这是本地环境凭据值核查，范围不包含其他来源的未知密钥或历史提交。克隆后没有本地`.env`时明确标为`skipped_no_local_env`；如主动使用`--skip-local-credentials`则标为`skipped_by_option`，均不作为凭据扫描通过的证据。
+
+`--require-local-credentials`与跳过选项互斥：只有扫描状态为`checked_local_literal_values`且实际比对至少1个有效凭据值时，`credential_scan_requirement_met`才为true；没有本地.env或没有符合条件的值时返回1。默认模式仍允许无.env的克隆检查通过，并明确记录跳过状态。CI通过受保护的本地环境文件提供待核查值，文件按现有规则忽略。
+
+禁入后缀同时覆盖`.bin/.onnx/.h5/.msgpack/.tflite`等权重或模型导出文件，和Git已跟踪但应忽略的文件检查互相补充；配置、分词器与说明资产继续保留。检查无法完成时返回2，并用安全错误分类区分根目录不可用、Git不可用/失败、缺少python-dotenv、文件编码/读取失败及报告写入失败；不回显原始异常中的文件内容或凭据值。
 
 ## 2026-09-30 核查
 
