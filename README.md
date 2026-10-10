@@ -81,6 +81,7 @@ med_rag/
 │   ├── verify_faq_services.py # 临时MySQL与隔离Redis键的真实FAQ联调
 │   ├── run_quality_pilot.py  # 固定20题检索、生成及独立裁判配对对照
 │   ├── check_completion_gate.py # 正常对照与内存变异验证输出发布门控
+│   ├── audit_repository.py   # 本地链接锚点、Git忽略与本地凭据值混入核查
 │   ├── test_degrade_policy.py# 分层降级策略 mock 测试（L0/L1/L2 全场景）
 │   ├── update_pptx_text.py   # 更新本地 PPT（演示文件不随仓库分发；用 --pptx 指定文件，支持 --dry-run）
 │   └── test_*.py / simple_*.py   # 测试与简化版工具
@@ -305,6 +306,8 @@ python scripts/test_quality_optimizations.py
 python scripts/test_degrade_policy.py
 # 静态安装核查读取 CUDA 构建记录，驱动可用性以 GPU 张量校验为准
 python scripts/audit_static.py
+# Git源码工作区：检查本地链接锚点、忽略规则和本地凭据值混入，无GPU或数据库调用
+python scripts/audit_repository.py
 ```
 
 验收记录覆盖回归、静态检查、本地数据、安装包和页面渲染；历史210题评分与本轮固定20题开发对照在本地分别留档，公开文档采用参考目标和评估方法。

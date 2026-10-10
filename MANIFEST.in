@@ -4,6 +4,7 @@ include docs/faq_guard_verification_20261010.json
 include docs/quality_pilot_20261010.json
 include scripts/check_completion_gate.py tests/test_quality_pilot.py
 include scripts/verify_faq_services.py
+include scripts/audit_repository.py
 include web_demo/app.py web_demo/README.md web_demo/run_streamlit.bat
 include frontend/package.json frontend/package-lock.json frontend/yarn.lock
 include frontend/index.html frontend/404.html frontend/README.md

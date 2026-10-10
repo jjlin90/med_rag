@@ -91,6 +91,7 @@ python scripts/test_degrade_policy.py
 ```bash
 python -m unittest discover -s tests -v   # 不构造正式 Config 的边界回归，使用 mock
 python scripts/audit_static.py            # 源码、链接与安装依赖核查
+python scripts/audit_repository.py        # Git源码工作区：链接锚点、忽略规则与本地凭据值核查
 python scripts/simple_offline_ingest.py    # 简化处理示例
 python scripts/simple_query_test.py        # 省略 LLM 生成，仍需本地模型与 Milvus
 ```
