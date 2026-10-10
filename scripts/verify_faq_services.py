@@ -40,12 +40,9 @@ class ScopedCache:
     def __init__(self, manager, prefix):
         self.manager, self.prefix = manager, prefix
         self.keys = set()
-        self.hits = 0
 
     def get(self, key):
-        value = self.manager.get(self.prefix + key)
-        self.hits += value is not None
-        return value
+        return self.manager.get(self.prefix + key)
 
     def set(self, key, value, ttl=None):
         scoped = self.prefix + key
@@ -63,6 +60,9 @@ class CountingCursor:
 
     def fetchone(self):
         return self.cursor.fetchone()
+
+    def __getattr__(self, name):
+        return getattr(self.cursor, name)
 
 
 def main():

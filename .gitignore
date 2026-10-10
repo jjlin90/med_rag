@@ -46,8 +46,9 @@ Thumbs.db
 # ===================== 密钥 / 环境变量 =====================
 # .env 含 LLM_API_KEY 等敏感信息，严禁提交
 .env
-.env.local
-.env.*.local
+.env.*
+*.env
+!.env.example
 
 # ===================== 日志 / 缓存 / 临时 =====================
 *.log
@@ -70,7 +71,7 @@ embeddings.json
 **/embedding_cache/
 
 # ===================== 模型权重（大文件，不入库） =====================
-# 仅屏蔽权重本体，保留 config/tokenizer/README 等小文件以便说明结构
+# 屏蔽权重本体，保留配置、分词器和说明文件以便复现模型结构
 src/models/**/*.bin
 src/models/**/*.pt
 src/models/**/*.pth
