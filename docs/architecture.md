@@ -1,6 +1,12 @@
 # med_rag 架构说明
 
-> 2026-10-08 对照源码、回归和本地数据核验。详细讲解见 [学习与面试全解](med_rag_学习与面试全解.md)，本轮验收见 [项目检查记录](review_20261008.md)。
+> 2026-10-10 更新 FAQ 问题一致性及缓存 v3；2026-10-08 对照源码、回归和本地数据核验。详细讲解见 [学习与面试全解](med_rag_学习与面试全解.md)，本轮验收见 [项目检查记录](review_20261008.md)。
+
+## GPU 运行环境
+
+正式模型计算统一使用 NVIDIA CUDA GPU：BGE-M3 向量化、BGE-reranker-large 重排与 BERT 意图分类共用 `Config.DEVICE="cuda"`。配置初始化检查 `torch.cuda.is_available()`，设备未就绪则终止启动并提供环境修复说明。向量化与重排使用 fp16，意图训练沿用 CUDA 配置并启用 fp16。文档加载、清洗、分块和数据库 IO 按各组件原有实现执行。
+
+Windows/Linux 的 uv 安装从官方 cu126 索引锁定 PyTorch；pip 需单独指定 CUDA wheel 来源。安装与实际 GPU 验证见 [快速上手](../GETTING_STARTED.md#2-校验-gpu-环境)。显存由模型、文本长度、batch 与并发共同决定；当前离线编码 batch=64，显存紧张时降低批量，并行评测需计入每个子进程独立加载的模型。
 
 ## 离线建库
 
@@ -17,8 +23,8 @@ BGE-M3 输出 1024 维稠密向量与稀疏词权，关闭 ColBERT；编码 batc
 ## 在线问答
 
 1. API 校验请求；`/chat` 取最后一条用户消息为问题，其余为 history。role 仅允许 user/assistant，正文非空，timestamp 可选。
-2. 允许缓存时先查 `query:v2`，键包含问题、来源过滤、显式策略和历史，仅去首尾空白。命中也保存本轮会话。
-3. 无历史、无来源过滤、无显式策略的请求进入 FAQ。允许缓存则先查 `faq:v2`，再用 MySQL/BM25；最高原始分大于零，且最多 5 个候选的 softmax 分达到 0.85 时直答。带约束的请求直接进入深通道。`use_cache=false` 关闭两层缓存读写。
+2. 允许缓存时先查 `query:v3`，键包含问题、来源过滤、显式策略和历史，仅去首尾空白。命中也保存本轮会话。
+3. 无历史、无来源过滤、无显式策略的请求进入 FAQ。允许缓存则先查 `faq:v3`，再用 MySQL/BM25；最高原始分大于零、最多 5 个候选的 softmax 分达到 0.85，且输入与索引及数据库标准问题仅首尾空白不同、答案非空时直答；缓存同样核对标准问题。带约束的请求直接进入深通道。`use_cache=false` 关闭两层缓存读写。
 4. 深通道分类一次。分类故障返回 `intent_classifier_unavailable` 的 L2。general 使用独立通用提示词；medical 使用显式策略或 LLM 选择的 direct、HyDE、subquery、backtracking。选择或增强失败回退直接检索。
 5. 每次稠密与稀疏两路融合，权重分别为 1.0 和 0.7，最多召回 16 个子块，取前 5 个按父 ID 聚合。父正文供生成，最高融合分子块作为 `rerank_content`。BGE-reranker-large 用原问题精排，最终取最多 2 条上下文。子查询串行检索，合并后统一重排。
 6. 返回答案、sources、意图、策略、置信分数、用时、会话与降级原因。保存最近 5 轮会话；L0/L1 可缓存，L2 跳过缓存。
@@ -46,9 +52,17 @@ MySQL 按 `timestamp DESC, id DESC` 读取与裁剪最近 5 轮，再反转为�
 
 ## 评测与验收
 
+质量试验开关：`RETRIEVAL_TITLE_ANCHOR` 默认false。未指定来源限制时，从本地分块目录找出问题中完整字面出现的真实标题，最长优先、最多两个；每个标题按原问题和严格来源过滤补一个子块，再在原Top-5预算内回溯父块。`topic_anchor`在去重中保留，重排先保留对应标题组，组内使用实际CrossEncoder分数。显式`source_filter`仍只检索指定来源，目录不可用时保留普通检索。各次标题补召回采用独立错误状态，失败时记录告警并跳过该路，保留主检索及其他成功补召回的资料；主检索故障仍返回L2/retrieval_error。
+
+生成上下文与实时评测共用文档标题格式。`LLM_GROUNDING_REVIEW`默认false，启用时只对默认严格医学提示路径进行复核，通用独立提示路径不增加此调用。复核输入为原始知识、问题、辅助历史及初稿；原文段落由程序编号，模型给出关键陈述、支持判断和证据编号，再输出最终答案。代码校验JSON类型、证据编号范围及输出完整性；失败返回None，由核心进入原文摘录L2。该检查增加过程可追溯性，语义支持关系仍需要质量评测和逐题核验。
+
+输出发布分为两层校验。非流式生成器检查`finish_reason`，仅在结束状态为`stop`时提取正文；截断、内容过滤、其他结束状态或接口异常返回None。对于`stop`响应，生成器将正文裁剪首尾空白，空内容会形成空字符串；核心再通过`if not answer`阻止空答案发布。医学分支在已有重排资料时返回原文摘录L2，原因统一为`llm_unavailable`；必需的事实复核发生调用、格式、编号或输出失败时也走同一路径，初稿不发布。该原因表示生成或复核未产出可发布答案，具体失败类型由相应日志说明；general分支无医学资料摘录，返回通用失败回复及同一L2原因。
+
 Ragas 0.2.6 在整批都有非空参考答案时运行 F/AR/CP/CR，否则运行 F/AR。请求了但缺失的指标保留；布尔、非有限和越界分数记 null，真实零分保留。报告提供 engine、metrics、valid_counts、complete_count、average 与 scores。备用裁判独立标为 `llm_judge_fallback`。
 
-历史 210 题原始评分复算为 F 0.8163、AR 0.5007、CP 0.8405、CR 0.7619；逐条评分等权综合为 0.729847976，四位显示 0.7298。主裁判 GLM-4.6V，DeepSeek 补齐缺失单元，逐项来源保留。当前修订使用回归验证；模型质量复评使用固定题集和独立输出文件。
+评测保留历史210题固定答案与上下文、逐项裁判及补评来源，本轮另设固定20题开发对照。当前修订由工程回归验证，模型质量由固定题集与独立输出文件复评；公开[参考目标](quality_pilot_20261010.md)用于优化规划，实测记录在本地产物中保留。
+
+`RAGAS_ANSWER_RELEVANCY_LANGUAGE=chinese`提供AR提示中文适配，默认仍为default；公式、严格度3及noncommittal惩罚保留。语言口径变化会改变评分，双方必须统一适配并另存结果。`LLM_JUDGE_REQUESTS_PER_SECOND`调节请求速率；长上下文评分需同时考虑供应商token配额。20题开发对照与历史全量结果分别见[质量试验记录](quality_pilot_20261010.md)和[评测与业务案例分析](Ragas评估与badcase分析.md)。
 
 入口：`python -m unittest discover -s tests -v`、`python scripts/test_quality_optimizations.py`、`python scripts/test_degrade_policy.py`、`python scripts/audit_static.py`。线上类型与过滤检查使用 `python scripts/check_chunk_type_filter.py --with-search`；旧服务计数使用分页迭代，避免 16384 条截断。
 

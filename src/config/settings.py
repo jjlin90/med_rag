@@ -53,9 +53,10 @@ class Config:
         self.TOP_K_RETRIEVE = 16       # 混合检索召回量（粗排，取多一点给精排留余地）
         self.TOP_K_CHILDREN = 5        # Small-to-Big：子块召回数（400字粒度，精细定位）
         self.TOP_K_RERANK = 2          # CrossEncoder 精排最终输出数（EduRag: Top-2 父块）
+        self.RETRIEVAL_TITLE_ANCHOR = os.getenv('RETRIEVAL_TITLE_ANCHOR','false').lower() in ('1','true','yes','on')
 
-        # FAQ 快通道参数（对齐 EduRag：softmax 归一化后阈值）
-        self.FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 softmax 归一化后的命中阈值 [0,1]
+        # FAQ 直答还必须与标准问题一致；该阈值仅衡量候选相对优势。
+        self.FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 softmax 候选分布阈值 [0,1]
         self.FAQ_CACHE_TTL = 3600              # FAQ Redis 缓存秒数（1小时）
 
         # ===================== 降级策略（Degradation Policy） =====================
@@ -77,16 +78,15 @@ class Config:
         self.DEGRADE_ALERT_LEVEL = 1          # 0=不打点 1=L1及以上告警 2=仅L2告警
 
         # ===================== 设备全局配置 =====================
-        # 按当前 PyTorch 与硬件运行时检测；无可用 CUDA 时使用 CPU。
-        self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-        if self.DEVICE == "cpu":
-            logger.warning(
-                "torch 未检测到可用 CUDA，使用 CPU 推理（torch=%s，构建CUDA=%s）。"
-                "GPU 环境请核对硬件、驱动和 PyTorch 构建，耗时在当前设备实测。",
-                torch.__version__, torch.version.cuda,
+        # 本地模型与训练统一使用 CUDA；环境不满足时在启动阶段明确失败。
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "本项目要求可用的 NVIDIA CUDA GPU，"
+                f"当前 torch={torch.__version__}，构建CUDA={torch.version.cuda}。"
+                "请按 GETTING_STARTED.md 安装 CUDA 版 PyTorch 并校验显卡驱动。"
             )
-        else:
-            logger.info(f"使用 GPU 推理: {torch.cuda.get_device_name(0)}")
+        self.DEVICE = "cuda"
+        logger.info(f"使用 GPU 推理: {torch.cuda.get_device_name(0)}")
 
         # ===================== Embedding模型配置 =====================
         self.EMBED_MODEL_NAME = "BGE-M3"
@@ -123,6 +123,8 @@ class Config:
         # 注：早期 30 题抽样曾估 ΔF=+0.42，系小样本方差大所致，已被全量修正。
         # 置 LLM_GROUNDING=false 可切回宽松模式，用于复现"无 grounding vs 有 grounding"的 A/B 对比。
         self.LLM_GROUNDING = os.getenv("LLM_GROUNDING", "true").lower() in ("1", "true", "yes", "on")
+        # 可选事实复核：生成后核对实体、条件、单位与原文依据；失败沿用原文降级。
+        self.LLM_GROUNDING_REVIEW = os.getenv("LLM_GROUNDING_REVIEW", "false").lower() in ("1", "true", "yes", "on")
 
         # ===================== LLM密钥&接口地址（从.env加载） =====================
         self.LLM_API_KEY = os.getenv("LLM_API_KEY", "")

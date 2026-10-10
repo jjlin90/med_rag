@@ -22,9 +22,15 @@ except ImportError:
     MYSQL_AVAILABLE = False
 
 from ..config.settings import Config
-from .cache_manager import CacheManager, faq_cache_key
+from .cache_manager import CacheManager, faq_cache_key, normalize_query
 
 logger = logging.getLogger(__name__)
+
+
+def faq_question_matches(query: str, question: str) -> bool:
+    """Only trim outer whitespace; never infer medical equivalence from overlap."""
+    return (isinstance(question, str) and bool(normalize_query(query))
+            and normalize_query(query) == normalize_query(question))
 
 class FAQSearch:
     """FAQ搜索器"""
@@ -46,7 +52,7 @@ class FAQSearch:
         # BM25参数（对齐 EduRag 快通道：softmax 归一化 → [0,1] 区间 → 阈值 0.85）
         self.bm25_k1 = 1.2
         self.bm25_b = 0.75
-        # 归一化后的置信度阈值（softmax 后分数在 [0,1]，0.85 表示高置信命中）
+        # 候选相对分布阈值，不是正确概率；直答还必须校验标准问题一致。
         self.bm25_threshold = config.FAQ_NORMALIZED_THRESHOLD  # 对齐 EduRag: 0.85
 
         # 初始化数据库连接
@@ -139,23 +145,26 @@ class FAQSearch:
         FAQ 快通道检索（对齐 EduRag ①快通道：BM25 + Redis + MySQL）。
 
         流程：
-          1. Redis 一级缓存查找 answer:(query) → 命中直接返回
+          1. 查 faq:v3:<MD5> 缓存，校验其标准问题与输入一致后返回
           2. jieba 分词 → BM25Okapi 计算原始相关性
           3. softmax 归一化 → argmax → best_score ∈ (0,1]
-          4. best_score ≥ 阈值(默认0.85)？→ 取答案 + 回填缓存 + need_rag=False
+          4. 分数达到阈值且标准问题仅首尾空白不同 → 取答案、回填缓存
           5. 未命中 → 返回 (None, True)，交给上游 RAG 深通道处理
 
         Args:
             query: 用户问题
             intent: 意图分类结果（仅用于缓存回写标记）
+            use_cache: 是否允许 FAQ 缓存读写
 
         Returns:
-            (answer, need_llm): 答案和是否需要走 RAG
+            (answer, need_rag): 答案和是否需要走 RAG
         """
-        # 1. 一级缓存：Redis 优先（对齐 EduRag "Redis 查缓存 answer:(query)"）
+        # v3 隔离旧模糊匹配答案；缓存必须保留匹配问题作为接受依据。
         faq_key = faq_cache_key(query)
         cached = self.cache.get(faq_key) if use_cache else None
-        if isinstance(cached, dict) and cached.get('type') == 'faq' and cached.get('answer'):
+        if (isinstance(cached, dict) and cached.get('type') == 'faq'
+                and isinstance(cached.get('answer'), str) and cached['answer'].strip()
+                and faq_question_matches(query, cached.get('question'))):
             logger.info(f"FAQ Redis 缓存命中，直接返回: {query}")
             return cached.get('answer'), False
 
@@ -176,24 +185,32 @@ class FAQSearch:
                 logger.error(f"FAQ index {best_index} has no corresponding db id")
                 return None, True
 
-            # 4. 阈值判断（softmax 后 [0,1]，0.85 表示高置信）
+            # 4. softmax 只表示候选优势，不能证明同义或适用人群相同。
             if best_score < self.bm25_threshold:
-                logger.info(f"FAQ 归一化置信度 {best_score:.3f} < 阈值 {self.bm25_threshold}，降级到 RAG")
+                logger.info(f"FAQ 候选softmax相对分数 {best_score:.3f} < 阈值 {self.bm25_threshold}，转入深通道")
                 return None, True
 
-            # 5. 获取答案
-            self.cursor.execute("SELECT answer FROM faq WHERE id = %s", (best_faq_id,))
+            candidate_question = self.bm25_index.documents[best_index]
+            if not faq_question_matches(query, candidate_question):
+                logger.info("FAQ 候选问题不一致，转入深通道: ID=%s", best_faq_id)
+                return None, True
+
+            # 5. 再核对数据库当前问题，防止索引与记录发生偏离。
+            self.cursor.execute("SELECT question, answer FROM faq WHERE id = %s", (best_faq_id,))
             result = self.cursor.fetchone()
 
-            if not result:
+            if not result or not faq_question_matches(query, result.get('question')):
                 return None, True
 
             answer = result['answer']
+            if not isinstance(answer, str) or not answer.strip():
+                return None, True
 
             # 6. 写回 Redis 一级缓存（对齐 EduRag "取答案 + 回填缓存"）
             if use_cache:
                 self.cache.set(faq_key, {
                     'type': 'faq',
+                    'question': result['question'],
                     'answer': answer,
                     'sources': [],
                     'confidence': best_score,

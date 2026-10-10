@@ -14,7 +14,7 @@ from typing import List, Dict, Any, Optional
 from ..config.settings import Config
 from .retrieval import Retrieval, RetrievalResult, DEGRADE_OK, DEGRADE_L1, DEGRADE_L2
 from .reranker import Reranker
-from .llm_generator import LLMGenerator
+from .llm_generator import LLMGenerator, format_knowledge_document
 from .intent_classifier import IntentClassifier
 from .strategy_selector import StrategySelector
 from .query_augmenter import QueryAugmenter
@@ -183,7 +183,7 @@ class RAGSystem:
             query, context, history=history
         )
 
-        # LLM 不可用时（返回空），有检索结果也要降级为「只给原文 + 就医建议」，
+        # 生成或事实复核未产出可发布答案时，有检索结果也要降级为「只给原文 + 就医建议」，
         # 而不是抛一个空答案——用户至少能看到检索到的原始资料。
         if not answer:
             logger.error("RAGSystem: LLM 生成失败，降级为原文摘录 (query=%r)", query)
@@ -365,6 +365,6 @@ class RAGSystem:
         top_k = self.config.TOP_K_RERANK  # 对齐 EduRag: 默认 2
         context_parts = []
         for i, doc in enumerate(documents[:top_k], 1):
-            context_parts.append(f"【知识来源{i}】\n{doc['content']}\n")
+            context_parts.append(f"【知识来源{i}】\n{format_knowledge_document(doc)}\n")
 
         return "\n".join(context_parts)

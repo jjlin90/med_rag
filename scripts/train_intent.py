@@ -15,6 +15,11 @@ import time
 import logging
 from pathlib import Path
 
+# 先执行项目的 Windows 原生依赖初始化与 OpenMP 环境配置，再导入计算库。
+BASE_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BASE_DIR))
+from src.config.settings import Config
+
 import numpy as np
 import torch
 from sklearn.metrics import classification_report, confusion_matrix
@@ -25,8 +30,6 @@ from transformers import (
     TrainingArguments,
 )
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.config.settings import Config
 from src.online_service.intent_classifier import IntentDataset
 
 logging.basicConfig(
@@ -35,7 +38,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("train_intent")
 
-BASE_DIR = Path(__file__).parent.parent
 TRAIN_FILE = BASE_DIR / "data/intent_train/train.json"
 VAL_FILE = BASE_DIR / "data/intent_train/val.json"
 BASE_MODEL = BASE_DIR / "src/models/bert-base-chinese"      # 预训练底座
@@ -64,7 +66,7 @@ def main():
         sys.exit(1)
 
     cfg = Config()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(cfg.DEVICE)
     logger.info(f"使用设备: {device}")
 
     # 1. 加载分词器与底座（num_labels=2，随机初始化分类头）
@@ -101,7 +103,7 @@ def main():
         metric_for_best_model="eval_loss" if val_ds else None,
         greater_is_better=False,
         save_total_limit=1,
-        fp16=torch.cuda.is_available(),
+        fp16=True,
         seed=42,
     )
 

@@ -10,7 +10,8 @@ RAG 评估脚本（离线）
 
 2. 静态评估（--static）：直接读取一份 Ragas 格式的评测集
    （question / context / answer / ground_truth，与 EduRag 的 ragas_evaluate.py 对齐），
-   不跑检索管线，直接对给定的 问答/上下文 打分。适合评估固定的 QA 对（如 FAQ 答案）。
+   不跑检索管线，直接对给定的 问答/上下文 打分；需要 CUDA GPU、本地 BGE-M3
+   与裁判接口。适合评估固定的 QA 对（如 FAQ 答案）。
        python scripts/evaluate_rag.py --static data/test_query/rag_evaluate_data.json
 
 说明：
@@ -20,7 +21,7 @@ RAG 评估脚本（离线）
 - 依赖 LLM（DashScope）与本地 BGE-M3 embedding 可用性。
 
 断点续跑（2026-08-29 补）：
-- 答案生成阶段是最耗时的一环（CPU 环境下约 15~20s/条），200+ 条要跑近 1 小时。
+- 实时生成涉及本地 GPU 模型与外部 LLM 接口；总耗时按当前设备、数据和接口实测。
   中途挂掉就全丢，因此生成阶段会边跑边把 answer/contexts 落盘到
   `--answers-file`（默认 <out-json>.answers.json），每 10 条刷一次。
 - 重跑时加 `--reuse-answers`，脚本会按 question 匹配已有答案直接跳过生成，
@@ -41,6 +42,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config.settings import Config
 from src.online_service.rag_evaluator import RAGEvaluator
+from src.online_service.llm_generator import format_knowledge_document
 from src.offline_pipeline.embedding_provider import BGEEmbeddingProvider
 
 
@@ -171,7 +173,7 @@ def run_live_eval(config: Config, items: List[Dict[str, Any]],
                 strategy=None,
                 session_id=f"eval-{int(time.time())}",
             )
-            contexts = [s.get("content", "") for s in (resp.sources or [])]
+            contexts = [format_knowledge_document(s) for s in (resp.sources or [])]
             answer = resp.answer or ""
             # 记录降级标记：评估时被降级/拒答的样本应单独统计，
             # 否则 L2 安全拒答会拉低 faithfulness，掩盖真实检索质量问题
@@ -256,7 +258,7 @@ def _flush_answers(path: Path, cache: Dict[str, Dict[str, Any]],
 
 
 def run_static_eval(config: Config, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """静态评估：直接对给定的 问答/上下文 打分，无需 Milvus / MySQL。"""
+    """静态评估：无需 Milvus/MySQL；需要 CUDA GPU、本地 BGE-M3 与裁判接口。"""
     # 规整字段：参考脚本用 context（单段）或 contexts（列表），统一为 contexts 列表
     norm = []
     for it in items:

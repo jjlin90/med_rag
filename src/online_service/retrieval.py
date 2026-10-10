@@ -68,6 +68,30 @@ class Retrieval:
         self.top_k_children = config.TOP_K_CHILDREN      # Small-to-Big: 子块召回数
         self.sparse_weight = config.SPARSE_WEIGHT         # 稀疏权重 (EduRag: 0.7)
         self.dense_weight = config.DENSE_WEIGHT           # 稠密权重 (EduRag: 1.0)
+        self._source_titles = None
+
+    def _matching_source_titles(self, query: str) -> List[str]:
+        """Exact titles from the real local corpus, with no semantic substitutions."""
+        if getattr(self, '_source_titles', None) is None:
+            path = getattr(self.config, 'CHUNK_SAVE_PATH', None)
+            try:
+                if path is None:
+                    raise FileNotFoundError('CHUNK_SAVE_PATH is unset')
+                rows = json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(rows, list):
+                    raise ValueError('Title catalog must contain a list of chunks')
+                titles = set()
+                for row in rows:
+                    metadata = row.get('metadata') if isinstance(row, dict) else None
+                    source = metadata.get('source') if isinstance(metadata, dict) else None
+                    if isinstance(source, str) and source:
+                        titles.add(source)
+                self._source_titles = sorted(titles)
+            except (OSError, ValueError, TypeError):
+                logger.warning('Title anchor catalog unavailable; retaining ordinary retrieval')
+                self._source_titles = []
+        matches = [s for s in self._source_titles if len(s) >= 2 and s in query]
+        return sorted(matches,key=lambda s:(-len(s),s))[:2]
 
     def search(self, query: str, source_filter: Optional[str] = None,
                use_hybrid: bool = True,
@@ -206,12 +230,38 @@ class Retrieval:
 
         Returns:
             RetrievalResult。documents 为去重后的父块（L0）或内存切片子块（L1），
-            按 fusion score 降序，供 CrossEncoder 精排使用。
+            匹配标题优先、组内按 fusion score 降序，供 CrossEncoder 精排使用。
         """
         # ==================== L0：严格模式 ====================
         status: Dict[str, Any] = {}
         children = self.search(query, source_filter, use_hybrid=True,
                                only_children=True, status=status)
+
+        # Never broaden an explicit user source restriction. A named corpus
+        # title contributes at most one best child per title, before backtracking.
+        if (not status.get('error') and not source_filter
+                and getattr(self.config,'RETRIEVAL_TITLE_ANCHOR',False)):
+            anchors = []
+            for title in self._matching_source_titles(query):
+                # Optional enrichment must not overwrite the primary lookup's
+                # status or discard evidence already retrieved successfully.
+                anchor_status: Dict[str, Any] = {}
+                anchored = self.search(query,title,use_hybrid=True,only_children=True,status=anchor_status)
+                if anchor_status.get('error'):
+                    logger.warning(
+                        'Title anchor lookup failed; retaining available retrieval (title=%r, error=%s)',
+                        title, anchor_status['error']
+                    )
+                    continue
+                if anchored:
+                    anchors.append({**anchored[0],'topic_anchor':True})
+            seen = set()
+            unique_children = []
+            for child in anchors + children:
+                if child.get('id') not in seen:
+                    seen.add(child.get('id'))
+                    unique_children.append(child)
+            children = unique_children
 
         # 基础设施故障（Milvus 不可达 / Embedding 推理失败）与「没有相关数据」
         # 必须严格区分：前者要告警，后者是正常拒答。混为一谈会让故障静默消失。
@@ -349,18 +399,20 @@ class Retrieval:
                     'score': child.get('score', 0),
                     'source': child.get('source', 'unknown'),
                     'children_ids': [child.get('id')],
+                    'topic_anchor': bool(child.get('topic_anchor')),
                 }
             else:
                 # 同一父块的多个子块：保留最高分，累积 children_ids
                 existing = parent_map[pid]
+                existing['topic_anchor'] = existing.get('topic_anchor',False) or bool(child.get('topic_anchor'))
                 if child.get('score', 0) > existing['score']:
                     existing['score'] = child.get('score', 0)
                     existing['rerank_content'] = child.get('content', '')
                 existing['children_ids'].append(child.get('id'))
 
         deduped_parents = list(parent_map.values())
-        # 按 score 降序排列（融合分数高的父块排前面，供 reranker 精排参考）
-        deduped_parents.sort(key=lambda x: x.get('score', 0), reverse=True)
+        # 匹配标题优先，组内按融合分降序，供 reranker 精排参考。
+        deduped_parents.sort(key=lambda x:(bool(x.get('topic_anchor')),x.get('score',0)),reverse=True)
 
         logger.info(
             f"Small-to-Big: {len(top_children)} 子块 → {len(deduped_parents)} 去重父块"
@@ -508,18 +560,6 @@ class Retrieval:
     def _build_source_filter(self, source: str) -> str:
         """构建来源过滤表达式"""
         return f"source == {json.dumps(source, ensure_ascii=False)}"
-
-    def get_source_stats(self) -> Dict[str, int]:
-        """获取各来源的文档统计"""
-        try:
-            # 这里简化处理，实际应该查询Milvus
-            stats = {}
-            logger.info("Source stats not fully implemented")
-            return stats
-
-        except Exception as e:
-            logger.error(f"Failed to get source stats: {str(e)}")
-            return {}
 
     def batch_search(self, queries: List[str], source_filter: Optional[str] = None) -> Dict[str, List[Dict]]:
         """批量搜索"""

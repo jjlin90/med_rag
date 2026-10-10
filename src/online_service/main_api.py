@@ -327,10 +327,13 @@ class RAGWebAPI:
         """
         统一查询编排（对齐 EduRag 双通道流程）：
 
-        通道① 快通道 · FAQ 高频问答（BM25 + Redis + MySQL）：
-          Redis 查缓存 answer:(query) → 命中直接返回
+        外层查询缓存：Redis 查 query:v3:<SHA-256>，键包含问题、来源、策略和历史；
+          有答案且降级等级低于L2的缓存结果可直接返回。
+
+        通道① 条件快通道 · FAQ 高频问答（无历史、无来源过滤、无显式策略）：
+          Redis 查 faq:v3:<MD5> FAQ缓存 → 标准问题一致才返回
           → jieba 分词 BM25Okapi → softmax 归一化 → best_score
-          → best_score ≥ 0.85？→ 取答案 + 回填缓存 + need_rag=False → 返回 FAQ 答案
+          → best_score ≥ 0.85 且标准问题一致？→ 取答案、回填缓存、返回
           → 否 → 降级到 RAG
 
         通道② 深通道 · 专业知识问答（BGE-M3 + Milvus + Reranker）：
@@ -340,7 +343,7 @@ class RAGWebAPI:
           → 混合检索(dense+sparse) → Small-to-Big(子块→父块去重) → Reranker 精排(Top-2)
           → Prompt 组装 → 配置的 LLM 非流式生成
 
-        最后写 MySQL 会话历史 + 写缓存，返回响应。
+        按路径写 MySQL 会话历史，L0/L1结果可写查询缓存，返回响应。
         """
         start_time = time.time()
 
@@ -348,8 +351,8 @@ class RAGWebAPI:
         if session_id is None:
             session_id = ConversationStore.new_session_id()
 
-        # ===== 通道① 快通道：FAQ 优先（对齐 EduRag "先 BM25/FAQ 命中即返"）=====
-        # Step 1: Redis 缓存查找（对齐 EduRag "Redis 查缓存 answer:(query)"）
+        # ===== 外层查询缓存：适用于 FAQ 与深通道结果 =====
+        # Step 1: 查询缓存 query:v3:<SHA-256>，键包含问题、来源、策略与历史。
         cache_key = query_cache_key(question, source_filter, strategy, history)
         if use_cache and self.cache.is_connected():
             cached_result = self.cache.get(cache_key)
@@ -373,10 +376,9 @@ class RAGWebAPI:
                     degrade_reason=cached_result.get('degrade_reason', ''),
                 )
 
-        # Step 2: FAQ BM25 检索（softmax 归一化，阈值 0.85）
-        # 不再做意图预判——EduRag 的设计是所有查询先过 FAQ 快通道，
-        # FAQ 命中则直接返回（高频标准问题不需要走昂贵 RAG），
-        # 未命中再降级到深通道。医疗问题如果恰好命中了高质量 FAQ 同样可以直接返回。
+        # Step 2: FAQ BM25 候选门槛 + 标准问题一致性校验
+        # 无历史、来源或策略约束时先尝试 FAQ；只有标准问题一致才直答。
+        # BM25/softmax 分数不能证明适用人群或医学含义相同。
         # FAQ has no conversation context or source/strategy filtering.
         faq_answer, need_rag = (None, True)
         if not history and not source_filter and not strategy:

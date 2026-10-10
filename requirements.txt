@@ -1,5 +1,7 @@
 # Direct dependencies synchronized with pyproject.toml.
-# For locked versions use uv sync; for Streamlit use uv sync --extra demo.
+# For locked CUDA versions use uv sync --locked; for Streamlit add --extra demo.
+# pip ignores tool.uv.sources: install torch==2.13.0+cu126 from the official
+# cu126 index first, then install this file. See GETTING_STARTED.md.
 # pip users can install the demo with: pip install -e ".[demo]"
 
 addict==2.4.0
@@ -24,12 +26,13 @@ nltk==3.9.1
 numpy==1.26.4
 openai>=1.109.1
 opencv-python==4.10.0.84
+packaging>=23.2
 pandas==2.3.1
 peft==0.18.1
 pillow==10.4.0
 pymilvus==2.5.4
 pymupdf==1.23.16
-pymysql==1.1.1
+pymysql[rsa]==1.1.1
 python-docx==1.1.2
 python-dotenv==1.0.1
 python-pptx==0.6.23
@@ -46,7 +49,7 @@ simplejson==3.19.2
 sortedcontainers==2.4.0
 starlette==0.46.2
 tiktoken==0.7.0
-torch>=2.1.0
+torch==2.13.0
 transformers==4.45.0
 unstructured==0.11.0
 urllib3>=1.21.1,<3

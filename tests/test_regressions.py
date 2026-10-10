@@ -100,7 +100,7 @@ class RegressionTests(unittest.TestCase):
     def test_faq_cache_disable_and_offline_cache(self):
         faq = FAQSearch.__new__(FAQSearch)
         faq.cache = Mock()
-        faq.cache.get.return_value = {'type': 'faq', 'answer': 'cached'}
+        faq.cache.get.return_value = {'type': 'faq', 'answer': 'cached', 'question': 'q'}
         faq.connection = faq.cursor = faq.bm25_index = None
         self.assertEqual(faq.search_faq('q', use_cache=False), (None, True))
         faq.cache.get.assert_not_called()

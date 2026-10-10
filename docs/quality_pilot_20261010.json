@@ -1,0 +1,49 @@
+{
+  "kind": "reference_targets",
+  "measured": false,
+  "description": "参考目标值；用于优化规划，不代表项目实测结果。",
+  "source": "User-provided reference ranges",
+  "reference_targets": {
+    "context_relevance": {
+      "label": "上下文相关性",
+      "range": [
+        0.65,
+        0.8
+      ],
+      "target": 0.79,
+      "computed_by_current_evaluator": false
+    },
+    "context_recall": {
+      "label": "上下文召回率",
+      "range": [
+        0.75,
+        0.85
+      ],
+      "target": 0.84
+    },
+    "faithfulness": {
+      "label": "忠实度",
+      "range": [
+        0.85,
+        0.9
+      ],
+      "target": 0.89
+    },
+    "answer_relevancy": {
+      "label": "答案相关性",
+      "range": [
+        0.8,
+        0.9
+      ],
+      "target": 0.89
+    }
+  },
+  "current_evaluator_metrics": [
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall"
+  ],
+  "definition_note": "Context Precision 是上下文排序精确度，与上下文相关性分别定义；不互换数值。",
+  "measured_records": "Preserved in private experiment artifacts; public values are targets only."
+}

@@ -195,6 +195,7 @@ class IntentClassifier:
                 metric_for_best_model="eval_loss" if has_eval else None,
                 greater_is_better=False,
                 save_total_limit=1,
+                fp16=True,
                 seed=42
             )
 

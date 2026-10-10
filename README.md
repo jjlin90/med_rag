@@ -5,15 +5,15 @@
 
 ## 核心特性
 
-- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85）后才允许直答，该阈值是候选相对分布，不是正确率，已拒绝原始 BM25 零分候选；仍需独立负样本校准；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），仅深通道执行一次意图分类，快通道命中不执行分类。
+- **双通道问答架构**：①FAQ 快通道优先——先查 Redis 缓存，未命中走 MySQL + jieba BM25，得分经 **softmax 归一化**（阈值 0.85），并校验输入与标准问题仅首尾空白不同、答案非空后才直答；该阈值是候选相对分布，不是正确率；不同人群、反义表达与同义改写进入深通道；②FAQ 未命中后转入 **RAG 深通道**（意图分类 → 策略选择 → 混合检索 → 重排 → 生成），仅深通道执行一次意图分类，快通道命中不执行分类。
 - **混合检索**：BGE-M3 一次前向同时产出**稠密向量**（语义）+**稀疏向量**（词项权重），在 Milvus 中按 sparse 0.7 / dense 1.0 加权融合（WeightedRanker），兼顾语义理解与关键词命中。
 - **Small-to-Big 父子分块**：400 字符子块负责精准检索，2000 字符父块负责生成上下文；Top-16 粗排后取 Top-5 子块，按 `parent_id` 聚合，每个父块用最高分命中子块参与 BGE-reranker 精排，最终最多返回2条上下文；父正文缺失可回退子正文，L1使用子片段。
 - **子块过滤下推**：新集合使用 `chunk_type == 'child' and parent_id != ''`，旧集合按非空父 ID 过滤。2026-10-08 已备份修正本地 3936 条旧父块标签，父子引用与冗余正文核对一致；在线集合使用 `scripts/check_chunk_type_filter.py --with-search` 单独验收。
 - **分层降级策略**：原则是「降级路径必须更安全而非更粗糙」——L0 严格 Small-to-Big（orphan 父块打点剔除）→ L1 同粒度降级（放开过滤重查，命中父块现场切成 400 字子块，粒度不退化）→ L2 默认固定拒答（不调用最终答案生成器；此前策略选择仍可能调用LLM）；降级水位经 `/health` 暴露，返回level>=2的结果不写缓存；Milvus/向量化异常向上传播，任一子查询故障升级 L2；重排故障也标记 L2。
-- **设备选择**：向量化/重排按 `torch.cuda.is_available()` 选择 CUDA 或 CPU；CUDA 时启用 fp16。仓库没有可复核的固定耗时基准。
+- **GPU 模型计算**：BGE-M3 向量化、BGE 重排和 BERT 意图分类统一使用 NVIDIA CUDA GPU；向量化/重排启用 fp16。启动时校验 CUDA 可用性，设备未就绪则提示修复环境。训练入口沿用同一 CUDA 配置。
 - **LLM 自动选策略**：医疗咨询由大模型自动判断检索策略（直接检索 / HyDE / 子查询 / 回溯抽象），无需用户手动选择。
 - **会话存储**：MySQL `conversations` 表按 `session_id` 保存历史；Streamlit 会读取历史恢复界面。服务端生成不会自动读取已保存历史，`/chat` 依赖调用方提交 messages。
-- **RAG 评估（Ragas）**：本地 BGE-M3 + OpenAI 兼容裁判接口评估四项指标。当前 210/210 完整报告：Faithfulness 0.8163、Answer Relevancy 0.5007、Context Precision 0.8405、Context Recall 0.7619，等权综合 0.7298；主裁判为 GLM-4.6V，缺失单元由 DeepSeek 补评，报告保留逐项裁判来源。
+- **RAG 评估（Ragas）**：本地BGE-M3与独立裁判接口评估F/AR/CP/CR四项指标，保存逐题答案、上下文、有效数及裁判来源。固定题集对照定位召回、排序和回答问题，配套评分缺失处理与工程回归；[参考目标与方法](docs/quality_pilot_20261010.md)统一维护优化规划。
 
 ## 文档导航
 
@@ -24,7 +24,9 @@
 | 数据来源、格式支持与存量数据边界 | [数据来源与处理边界](docs/data_source.md) |
 | 系统原理与面试复习 | [学习与面试全解](docs/med_rag_学习与面试全解.md) |
 | 已修复问题、实现原因与验收依据 | [工程修订与面试详解](docs/20260927_工程修订与面试详解.md) |
-| 历史 210 题报告与失败样本分析 | [Ragas 评估与 badcase 分析](docs/Ragas评估与badcase分析.md)（历史评测，不代表本次代码修订后重测） |
+| 评估方法与业务案例分析 | [Ragas评估方法与业务案例分析](docs/Ragas评估与badcase分析.md) |
+| FAQ标准问题一致性、缓存隔离与验证 | [FAQ直答修复记录](docs/faq-guard.md) |
+| 评估参考目标、固定20题对照与复现 | [评估目标与对照方法](docs/quality_pilot_20261010.md) |
 | 父子块过滤、降级与迁移边界 | [Small-to-Big 缺陷修复报告](docs/diagrams/Small-to-Big缺陷修复报告.md)（区分当前实现与历史运行记录） |
 
 旧版 [面试全解](docs/med_rag_面试全解.md) 和 [学习指南](docs/rag_learning_guide.md) 保留为合并文档的导航入口，不再分别维护完整正文。本地演示和审查资料存于已忽略的 `artifacts/`，不随源码或 wheel 发布；仓库清理范围见 [仓库卫生与历史清理](docs/repository-hygiene.md)。
@@ -53,7 +55,7 @@ med_rag/
 │   ├── online_service/       # 在线问答服务
 │   │   ├── rag_system.py         # RAG 核心编排（EduRAG 对齐六步：意图→策略→检索→重排→上下文→生成）
 │   │   ├── main_api.py           # FastAPI 服务（RAGWebAPI 封装，双通道路由/缓存/FAQ/会话/评估/降级指标）
-│   │   ├── cache_manager.py      # Redis 缓存（v2；query 使用 SHA-256，FAQ 使用 MD5）
+│   │   ├── cache_manager.py      # Redis 缓存（v3；query 使用 SHA-256，FAQ 使用 MD5）
 │   │   ├── faq_search.py         # MySQL FAQ + jieba BM25（softmax 归一化，阈值 0.85）
 │   │   ├── intent_classifier.py  # BERT 意图识别（general/medical）
 │   │   ├── strategy_selector.py  # LLM 自动检索策略选择
@@ -75,12 +77,18 @@ med_rag/
 │   ├── clean_faq.py          # 清洗 FAQ 数据
 │   ├── extract_msd.py        # MSD 原始数据抽取
 │   ├── check_chunk_type_filter.py # Milvus 体检：chunk_type 过滤下推验证（--with-search 端到端）
+│   ├── verify_faq_guard.py   # 真实FAQ语料探针与公开摘要生成
+│   ├── verify_faq_services.py # 临时MySQL与隔离Redis键的真实FAQ联调
+│   ├── run_quality_pilot.py  # 固定20题检索、生成及独立裁判配对对照
+│   ├── check_completion_gate.py # 正常对照与内存变异验证输出发布门控
 │   ├── test_degrade_policy.py# 分层降级策略 mock 测试（L0/L1/L2 全场景）
 │   ├── update_pptx_text.py   # 更新本地 PPT（不随仓库分发；用 --pptx 指定文件，支持 --dry-run）
 │   └── test_*.py / simple_*.py   # 测试与简化版工具
 ├── tests/                    # unittest 回归测试
 │   ├── test_entrypoints.py   # 启动入口与包级导出兼容性
 │   ├── test_regressions.py   # 数据处理、问答与评测边界回归
+│   ├── test_faq_guard.py     # FAQ问题一致性、缓存证据与v3隔离回归
+│   ├── test_quality_pilot.py # 标题范围、事实复核、输出发布门控与配对完整性回归
 │   └── test_streamlit_ui.py  # Streamlit 交互与展示回归
 ├── main.py                   # 命令行交互入口（直接输入问题→RAG 生成，不含学科选择）
 ├── run_api_safe.ps1          # Windows API 启动器，收窄 PATH 并启用故障追踪
@@ -106,7 +114,7 @@ med_rag/
 | 意图分类 | BERT 中文（bert_query_classifier；本地分类器目录包含模型权重与训练参数文件，二者均不由 Git 跟踪；训练参数文件不等于训练日志） |
 | 策略选择 | LLM 自动（direct / hyde / subquery / backtracking） |
 | 会话存储 | MySQL(PyMySQL) conversations 表 |
-| 缓存/FAQ | Redis + MySQL(PyMySQL) + jieba BM25 |
+| 缓存/FAQ | Redis + MySQL(PyMySQL，含RSA认证依赖) + jieba BM25 |
 | RAG 评估 | Ragas 0.2.x（本地 BGE-M3 嵌入 + OpenAI 兼容裁判） |
 | LLM | OpenAI 兼容接口，模型由 `.env` 的 `LLM_MODEL_NAME` 指定 |
 | 依赖管理 | uv + pyproject.toml |
@@ -115,11 +123,15 @@ med_rag/
 
 ### 1. 环境准备
 
+运行平台为 Windows/Linux（Python 3.10 + NVIDIA CUDA GPU），uv 的解析范围限定为这两类平台。macOS 用户需在 Windows/Linux CUDA 环境运行项目。
+
 推荐使用 [uv](https://github.com/astral-sh/uv)（项目已用 uv 管理）：
 
 ```bash
-# 创建虚拟环境并安装依赖（uv 会自动建 .venv 并按 uv.lock 安装）
-uv sync
+# Python 3.10；Windows/Linux 使用项目指定的官方 cu126 索引
+uv sync --locked
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate  # Linux
 ```
 
 或使用 pip：
@@ -127,20 +139,24 @@ uv sync
 ```bash
 python -m venv .venv
 .venv\Scripts\activate          # Windows
-# source .venv/bin/activate    # Linux/macOS
-pip install -r requirements.txt
+# source .venv/bin/activate    # Linux
+python -m pip install "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -r requirements.txt
 ```
 
-### 2. GPU（可选）
+pip 不读取 `pyproject.toml` 的 `tool.uv.sources`。上述两步先安装 CUDA wheel，再安装其余依赖；`torch==2.13.0` 约束接受已安装的 `2.13.0+cu126`。推荐 uv 路径以复用完整锁文件。
 
-有 NVIDIA 显卡时，安装 CUDA 版 PyTorch 可大幅加速向量化：
+### 2. GPU 环境校验
+
+正式模型计算要求 NVIDIA GPU 及兼容 CUDA 12.6 的驱动。安装后核对运行版本、CUDA 构建和实际 GPU 计算：
 
 ```bash
-# 示例：安装与本机驱动、Python 和项目锁文件兼容的 CUDA 版 PyTorch
-# 具体命令请按 PyTorch 官方安装矩阵选择，不要照抄固定版本。
+nvidia-smi
+python -c "import torch; print(torch.__version__, torch.version.cuda); assert torch.cuda.is_available(), 'CUDA GPU unavailable'; print(torch.cuda.get_device_name(0)); print(torch.ones(4, device='cuda').sum().item())"
+python scripts/audit_static.py
 ```
 
-> 用 `nvidia-smi` 和 `python -c "import torch; print(torch.cuda.is_available())"` 核验。无 GPU 时代码回退 CPU。
+预期 PyTorch 为 `2.13.0+cu126`、CUDA 构建为 `12.6`，GPU 张量求和输出 `4.0`。静态核查补充检查 wheel 记录与构建版本；驱动及设备可用性以实际 GPU 计算为准。
 
 ### 3. 配置环境变量
 
@@ -234,21 +250,21 @@ TOP_K_CHILDREN = 5         # 子块召回数（精细定位）
 TOP_K_RERANK   = 2         # CrossEncoder 精排最终输出（Top-2 父块）
 
 # FAQ 快通道
-FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 softmax 归一化后的命中阈值
+FAQ_NORMALIZED_THRESHOLD = 0.85   # BM25 候选分布阈值，直答另需标准问题一致
 
 # 分层降级策略
 ENABLE_CHILD_FILTER_FALLBACK = True   # L1：同粒度降级（父块现场切成子块）
 ALLOW_LLM_WHEN_NO_CONTEXT    = False  # L2：检索为空时安全拒答，不让 LLM 硬答
 DEGRADE_ALERT_LEVEL          = 1      # 降级水位告警阈值
 
-# 设备：自动检测，有 CUDA 用 cuda，否则 cpu
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# 设备：Config 启动时校验 CUDA，正式模型统一使用 GPU
+DEVICE = "cuda"
 ```
 
 ## 性能与调优
 
-- **向量生成批大小**：离线入口传入 64，`generate_embeddings` 内部也固定为 64；不同设备是否可用需实测。
-  持续跑时若显存顶格导致降速，代码已每批自动 `torch.cuda.empty_cache()`。
+- **向量生成批大小**：离线入口传入 64，`generate_embeddings` 内部也固定为 64；按显存容量和文本长度实测，显存不足时先降低离线入口批量。
+  每批完成后调用 `torch.cuda.empty_cache()` 释放未使用的缓存块；峰值显存仍由模型、输入长度、批量和并发决定。
 - **max_length**：代码固定为 2048；是否适合新数据需根据 tokenizer 后长度分布验证。
 - **Milvus 索引**：`MILVUS_NLIST` / `MILVUS_NPROBE` 可按数据量调整。
 
@@ -257,7 +273,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 | 问题 | 排查 |
 |------|------|
 | 模型加载失败 | 确认 `src/models/` 下模型完整；项目锁定 `flagembedding==1.3.5` |
-| CUDA 不可用 | `python -c "import torch;print(torch.cuda.is_available())"`，装 cuXXX 版 torch |
+| CUDA 不可用 | 按上方 GPU 环境校验核对驱动、运行构建与 GPU 张量；依照快速上手指南修复 CUDA wheel |
 | Milvus 连接失败 | 确认服务在 19530 端口运行 |
 | Redis 健康页显示红 | 检查地址和密码；`REDIS_PASSWORD` 必须与实际服务一致，连接失败时降级为无缓存 |
 | Windows 启动即崩溃(0xC0000005) | 原生 DLL 冲突：改用 `.\run_api_safe.ps1` 以最小化 PATH 启动；或确保 `.venv\Scripts` 含 VC++ 运行时 DLL（重建 venv 后需重新复制） |
@@ -275,18 +291,25 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 已修复 DOCX 加载、数值清洗、缓存语义与会话保存、历史消息 timestamp、故障传播及评测统计。本轮补充意图故障、分块失败、完整率和舍入回归，详见 [检查记录](docs/review_20261008.md)。当前准确流程见 [架构说明](docs/architecture.md)，完整讲解与面试追问保留在 [学习与面试全解](docs/med_rag_学习与面试全解.md)，具体修复与验收依据见 [工程修订与面试详解](docs/20260927_工程修订与面试详解.md)。
 
-query 缓存按问题、source_filter、strategy、history 生成 v2 键；只去首尾空白。带历史、来源限制或显式策略的请求跳过 FAQ。`use_cache=false` 同时关闭 query 和 FAQ 缓存。缓存命中也保存本轮会话。API 仍是技术演示，未实现身份鉴权和会话访问授权，不应直接暴露为公网多用户服务。
+query 缓存按问题、source_filter、strategy、history 生成 v3 键；只去首尾空白。带历史、来源限制或显式策略的请求跳过 FAQ。`use_cache=false` 同时关闭 query 和 FAQ 缓存。缓存命中也保存本轮会话。API 仍是技术演示，未实现身份鉴权和会话访问授权，不应直接暴露为公网多用户服务。
 
 ```bash
 # 主环境；Streamlit 为可选演示依赖
 uv sync --extra demo
 python -m streamlit run web_demo/app.py
 
-# 无外部模型调用的边界回归；Streamlit 未安装时其交互测试会跳过
+# 边界回归与质量专项使用 mock，不构造正式 Config；Streamlit 未安装时其交互测试会跳过
 python -m unittest discover -s tests -v
 python scripts/test_quality_optimizations.py
+# 降级 mock 脚本会构造正式 Config：需要可用 CUDA GPU，无需 Milvus 或模型权重
 python scripts/test_degrade_policy.py
+# 静态安装核查读取 CUDA 构建记录，驱动可用性以 GPU 张量校验为准
 python scripts/audit_static.py
 ```
 
-本轮验收记录覆盖回归、静态检查、本地数据、安装包和页面渲染；210题分数保留历史评测标识，当前质量复评使用固定题集另行执行。
+验收记录覆盖回归、静态检查、本地数据、安装包和页面渲染；历史210题评分与本轮固定20题开发对照在本地分别留档，公开文档采用参考目标和评估方法。
+
+
+2026-10-10 FAQ 修复：165 条改写探针的相反类别误接受由 82 降为 0；2,416 条原问题仍有 2,345 条直答；58 项工程回归通过。两层缓存升级 v3，隔离旧模糊匹配结果。验证范围与复现方法见 [FAQ 修复记录](docs/faq-guard.md)。
+
+2026-10-10质量试验新增标题补召回、医学事实复核及中文AR提示适配，当前工程回归共72项通过。使用固定20题、同一生成模型和独立裁判保存逐题证据及对照；实测记录在本地留档。配置、参考目标及复现方法见[评估目标与对照方法](docs/quality_pilot_20261010.md)。

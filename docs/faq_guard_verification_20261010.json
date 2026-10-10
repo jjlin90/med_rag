@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-10-10T10:18:06.249089+00:00",
+  "dataset": "data/msd_faq_clean.csv",
+  "dataset_sha256": "537fe424b2563ba804e46d0e4c8388aff58394f185d412073b7f9e36a04e28f2",
+  "faq_count": 2416,
+  "perturbation_count": 165,
+  "before_opposite_acceptances": 82,
+  "after_opposite_acceptances": 0,
+  "after_direct_answers": 20,
+  "after_nonexact_direct_answers": 0,
+  "original_question_controls": {
+    "count": 2416,
+    "before_direct": 2345,
+    "after_direct": 2345
+  },
+  "scope": "Real local FAQ corpus and BM25; CSV cursor replaces MySQL, cache disabled; no deep RAG or clinical answer validation.",
+  "acceptance_policy": "Exact standard question after trimming outer whitespace; BM25/softmax gate and nonempty database answer also required.",
+  "cache_namespaces": [
+    "query:v3",
+    "faq:v3"
+  ],
+  "automated_tests_passed": 72
+}

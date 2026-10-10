@@ -32,15 +32,15 @@ def _digest(text: str) -> str:
 
 
 def query_cache_key(text: str, source_filter=None, strategy=None, history=None) -> str:
-    """问题、来源、策略和历史共同构成稳定的 v2 缓存键。"""
+    """问题、来源、策略和历史构成 v3 键，隔离旧 FAQ 接受策略的结果。"""
     payload = json.dumps([normalize_query(text), source_filter, strategy, history],
                          ensure_ascii=False, sort_keys=True)
-    return f"query:v2:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+    return f"query:v3:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
 def faq_cache_key(text: str) -> str:
     """FAQ 一级缓存键：MySQL 命中后写入，下次查询优先查这里。"""
-    return f"faq:v2:{_digest(text)}"
+    return f"faq:v3:{_digest(text)}"
 
 class CacheManager:
     """Redis缓存管理器"""

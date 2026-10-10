@@ -2,13 +2,16 @@
 多模型并行 Ragas 评估启动器。
 
 背景：run_chunked_eval_v2 是串行的——一个模型跑完才轮下一个，5 个模型里只有 1 个在干活。
-但每个模型有独立的 100 万免费额度，完全可以同时开多个进程各跑一段。
+不同裁判模型可分进程评测各自样本；并发数需同时匹配接口限额与本地 GPU 显存。
 
 本脚本把"剩余待评估样本"按 round-robin 切成 N 份，每份交给一个独立 python 子进程（不同模型）
 并行评估，最后统一合并。
 
 用法：
-  # 并行模式（默认）：3 路并行，把剩余样本分给 3 个模型
+  # 先以单进程校验 GPU 显存与接口配置
+  python scripts/run_parallel_eval.py --models YOUR_JUDGE_MODEL
+
+  # 显存与接口额度允许时：3 路并行，把剩余样本分给 3 个模型
   python scripts/run_parallel_eval.py --models glm-5.2 minimax-m3 hy3
 
   # 只合并已有块（含历史 chunk_*.json 与本次 chunk_par_*.json）
@@ -18,7 +21,8 @@
   python scripts/run_parallel_eval.py --worker --model X --questions-file Q.json --out O.json
 
 注意：
-  - 每个子进程都会独立加载 BGE-M3（CPU，~2GB）。并行数越多越吃内存，笔记本建议 ≤3。
+  - 每个子进程在 CUDA GPU 上独立加载 BGE-M3，模型列表长度就是并发进程数。
+    8GB 显存建议先用一个模型进程实测，再按峰值显存决定是否增加并发。
   - 合并正式 Ragas 的四项完整有效样本；真实全零保留，缺项继续补评。
 """
 

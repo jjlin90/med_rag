@@ -93,7 +93,10 @@ class Reranker:
                 doc['rerank_score'] = float(score)
 
             # 按分数排序
-            documents.sort(key=lambda x: x['rerank_score'], reverse=True)
+            # A title explicitly named in the question must remain distinguishable
+            # from a semantically similar disease. Ranking within each group uses
+            # the actual CrossEncoder score.
+            documents.sort(key=lambda x:(bool(x.get('topic_anchor')),x['rerank_score']),reverse=True)
 
             # 返回Top-K
             top_scores_str = ', '.join(f"{d.get('rerank_score', 0):.3f}" for d in documents[:top_k])

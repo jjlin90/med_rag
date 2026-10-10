@@ -21,6 +21,7 @@ LLM-as-judge（faithfulness / context_precision / answer_relevancy），保证�
 """
 
 import json
+import copy
 import logging
 import math
 import os
@@ -42,6 +43,34 @@ def valid_metric_score(value) -> bool:
             and math.isfinite(value) and 0 <= value <= 1)
 
 logger = logging.getLogger(__name__)
+
+
+def answer_relevancy_metric(language='default'):
+    """Keep the Ragas formula/strictness; optionally translate its prompt to Chinese."""
+    from ragas.metrics import AnswerRelevancy
+    from ragas.metrics._answer_relevance import ResponseRelevanceInput, ResponseRelevanceOutput
+    metric = AnswerRelevancy()
+    if language == 'default':
+        return metric
+    if language != 'chinese':
+        raise ValueError('RAGAS_ANSWER_RELEVANCY_LANGUAGE must be default or chinese')
+    prompt = copy.deepcopy(metric.question_generation)
+    prompt.language = 'chinese'
+    prompt.instruction = (
+        '根据给出的回答生成一个问题，并判断回答是否含糊。'
+        '含糊的回答将noncommittal设为1，明确的回答设为0。'
+        '含糊的回答指回避、模糊或含义不清的回答，例如“我不知道”或“我不确定”。'
+        '生成的问题使用中文。'
+    )
+    # Direct translation of the two upstream examples; labels are unchanged.
+    prompt.examples = [
+        (ResponseRelevanceInput(response='阿尔伯特·爱因斯坦出生于德国。'),
+         ResponseRelevanceOutput(question='阿尔伯特·爱因斯坦出生在哪里？',noncommittal=0)),
+        (ResponseRelevanceInput(response='我不了解2023年发明的智能手机的突破性功能，因为我不知道2022年之后的信息。'),
+         ResponseRelevanceOutput(question='2023年发明的智能手机的突破性功能是什么？',noncommittal=1)),
+    ]
+    metric.question_generation = prompt
+    return metric
 
 
 class _BgeEmbeddings:
@@ -99,8 +128,11 @@ class RAGEvaluator:
         # 142 条四项全 0）。用内存限流器把速率压到 ~1 次/秒，超出部分阻塞等待而非
         # 失败；max_retries 兜底偶发 429（注意：本机 langchain_core 版本的
         # InMemoryRateLimiter 不支持 max_bucket 参数，仅用 rps + check_every_n_seconds）。
+        judge_rps = float(os.getenv("LLM_JUDGE_REQUESTS_PER_SECOND", "1.0"))
+        if not math.isfinite(judge_rps) or judge_rps <= 0:
+            raise ValueError('LLM_JUDGE_REQUESTS_PER_SECOND must be finite and positive')
         rate_limiter = InMemoryRateLimiter(
-            requests_per_second=1.0,
+            requests_per_second=judge_rps,
             check_every_n_seconds=0.1,
         )
         # temperature：judge 默认用 0.0 保证可复现。但部分模型（如 TokenHub 上的
@@ -204,18 +236,17 @@ class RAGEvaluator:
     def _evaluate_ragas(self, items: List[Dict[str, Any]],
                         show_progress: bool = False) -> Dict[str, Any]:
         from ragas import evaluate
-        from ragas.metrics import (Faithfulness, AnswerRelevancy,
-                                   ContextPrecision, ContextRecall)
+        from ragas.metrics import Faithfulness, ContextPrecision, ContextRecall
         from ragas.run_config import RunConfig
         from datasets import Dataset
 
         # ground_truth 缺失时，依赖它的两项上下文指标无法计算，仅跑 LLM 类两项
         has_gt = all(bool(it["ground_truth"]) for it in items)
         if has_gt:
-            metrics = [Faithfulness(), AnswerRelevancy(),
+            metrics = [Faithfulness(), answer_relevancy_metric(os.getenv('RAGAS_ANSWER_RELEVANCY_LANGUAGE','default')),
                        ContextPrecision(), ContextRecall()]
         else:
-            metrics = [Faithfulness(), AnswerRelevancy()]
+            metrics = [Faithfulness(), answer_relevancy_metric(os.getenv('RAGAS_ANSWER_RELEVANCY_LANGUAGE','default'))]
 
         dataset = Dataset.from_dict({
             "question": [it["question"] for it in items],

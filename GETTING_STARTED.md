@@ -5,7 +5,8 @@
 ## 前置条件
 
 - Python 3.10（项目用 uv 管理，会自动使用 `.venv`）
-- 可选：NVIDIA GPU；是否提速及可用 batch 需在本机实测
+- 运行平台为 Windows/Linux，uv 的解析范围限定为这两类平台；macOS 用户需在 Windows/Linux CUDA 环境运行项目
+- NVIDIA GPU 及兼容 CUDA 12.6 的驱动；正式模型计算与意图训练统一使用 CUDA，可用 batch 按显存实测
 - 真实 RAG/API 启动需要 Milvus(19530)；Redis(6379) 与 MySQL(3306) 连接失败时相关缓存、FAQ、会话能力会降级
 
 ## 五步跑通
@@ -13,16 +14,31 @@
 ### 1. 安装依赖
 
 ```bash
-uv sync                 # 推荐：按 uv.lock 一键建 .venv 并安装
-# 或：pip install -r requirements.txt
+uv sync --locked          # 推荐：按 uv.lock 安装；Windows/Linux 采用官方 cu126 索引
+.venv\Scripts\activate    # Windows
+# source .venv/bin/activate  # Linux
 ```
 
-### 2.（有 GPU 才做）安装 CUDA 版 PyTorch
+使用 pip 时先创建并激活 Python 3.10 虚拟环境，再执行：
 
 ```bash
-# 先用 nvidia-smi 查看驱动，再按 PyTorch 官方安装矩阵选择
-# 与 Python 3.10、驱动和项目依赖兼容的 CUDA wheel。
+python -m pip install "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -r requirements.txt
 ```
+
+pip 不读取 uv 的索引配置，需先单独安装 CUDA wheel。`requirements.txt` 的 `torch==2.13.0` 接受已安装的 `2.13.0+cu126`；其余依赖使用普通索引。uv 安装路径无需额外执行这两步。
+
+### 2. 校验 GPU 环境
+
+```bash
+nvidia-smi
+python -c "import torch; print(torch.__version__, torch.version.cuda); assert torch.cuda.is_available(), 'CUDA GPU unavailable'; print(torch.cuda.get_device_name(0)); print(torch.ones(4, device='cuda').sum().item())"
+python scripts/audit_static.py
+```
+
+预期运行版本 `2.13.0+cu126`、CUDA 构建 `12.6`，GPU 张量求和输出 `4.0`。`Config` 会在启动时检查 CUDA 可用性，环境未就绪时明确报错。BGE-M3、BGE-reranker-large 和 BERT 意图模型共享 CUDA 设备配置；向量化、重排及意图训练启用 fp16。
+
+旧环境若混入 CPU wheel，可用已激活环境执行 `python -m pip install --force-reinstall --no-deps "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126`，然后重新执行上述校验。`uv lock --check` 检查声明与锁文件关系，实际安装构建由静态核查和 GPU 张量计算确认。
 
 ### 3. 配置环境变量
 
@@ -31,6 +47,8 @@ cp .env.example .env
 # 编辑 .env，至少填入 LLM_API_KEY 与 LLM_BASE_URL
 # REDIS_PASSWORD 必须与实际 Redis 服务一致；.env.example 的本地示例值为 1234
 ```
+
+质量试验可设置 `RETRIEVAL_TITLE_ANCHOR=true` 和 `LLM_GROUNDING_REVIEW=true`：前者读取本地 `data/split_docs/docs.json` 中的真实标题，后者对医学初稿增加一次结构化事实复核。标题补召回失败时告警并保留主检索已成功的资料；主检索故障仍按L2处理。复核失败时返回原文摘录L2/llm_unavailable，不发布初稿。两项默认关闭，可按实测质量与用时选择。固定20题对照及中文AR评测口径见[质量试验记录](docs/quality_pilot_20261010.md)。
 
 ### 4. 准备模型与数据
 
@@ -62,7 +80,7 @@ python scripts/test_query_pipeline.py
 python scripts/check_chunk_type_filter.py
 python scripts/check_chunk_type_filter.py --with-search --query "一型糖尿病和二型糖尿病有什么区别"
 
-# 分层降级策略回归测试（mock/控制流测试，无需 Milvus）
+# 分层降级策略 mock 测试：构造 Config 时需可用 CUDA GPU，无需 Milvus 或模型权重
 python scripts/test_degrade_policy.py
 ```
 
@@ -71,7 +89,7 @@ python scripts/test_degrade_policy.py
 ## 先验证环境和处理流程
 
 ```bash
-python -m unittest discover -s tests -v   # 模拟外部服务的边界回归
+python -m unittest discover -s tests -v   # 不构造正式 Config 的边界回归，使用 mock
 python scripts/audit_static.py            # 源码、链接与安装依赖核查
 python scripts/simple_offline_ingest.py    # 简化处理示例
 python scripts/simple_query_test.py        # 省略 LLM 生成，仍需本地模型与 Milvus
@@ -82,13 +100,14 @@ python scripts/simple_query_test.py        # 省略 LLM 生成，仍需本地模
 | 问题 | 处理 |
 |------|------|
 | FlagEmbedding 报错 | 项目锁定 `flagembedding==1.3.5`，先确认安装版本与本地模型完整 |
-| CUDA 不可用 | `python -c "import torch;print(torch.cuda.is_available())"`；装 cuXXX 版 torch |
+| CUDA 不可用 | 执行第二步，核对 NVIDIA 驱动、`torch.__version__`、`torch.version.cuda` 和 GPU 张量；按上文重装 cu126 wheel |
 | 显存不足(OOM) | 把 `embedding_provider.py` 和 `run_offline_ingest.py` 的 `batch_size` 从 64 调小到 32 |
 | Milvus 连不上 | 确认服务在 19530；离线入库必须先启动 Milvus |
 | API 启动入口 | 推荐 `python scripts/run_api.py`；`python -m src.online_service.main_api` 与直接运行该文件也可使用 |
 | Redis 健康页显示红 | 检查服务地址和密码；`REDIS_PASSWORD` 必须与实际 Redis 配置一致，失败时降级为无缓存 |
 | Windows 启动崩溃(0xC0000005) | 原生 DLL 冲突，改用 `.\run_api_safe.ps1` 最小化 PATH 启动 |
 | Redis/MySQL 报错 | 可选组件，未启动自动降级，不影响主链路 |
+| MySQL 8 认证提示缺少 cryptography | 依赖清单使用 `pymysql[rsa]==1.1.1`，按安装步骤同步依赖，支持 `caching_sha2_password` / `sha256_password` 认证 |
 
 ## 训练与评估
 
@@ -100,7 +119,7 @@ python scripts/build_intent_data.py
 python scripts/train_intent.py
 
 # RAG 评估（Ragas 四项指标）
-python scripts/evaluate_rag.py --static data/test_query/rag_evaluate_data.json   # 静态，无需 Milvus/MySQL
+python scripts/evaluate_rag.py --static data/test_query/rag_evaluate_data.json   # 需 CUDA/BGE-M3/裁判接口，无需 Milvus/MySQL
 python scripts/evaluate_rag.py                                                    # 实时管线评估（需服务在线）
 ```
 

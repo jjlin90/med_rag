@@ -57,8 +57,8 @@ class BGEEmbeddingProvider:
             self.dense_model = BGEM3FlagModel(
                 str(self.model_path),
                 devices=self.device,
-                # 仅在 GPU 上开启 fp16：BGE-M3 约 2.3GB 权重，fp16 下约 1.1GB，
-                # 既能塞进 8G 显存又能显著提速；CPU 不支持 fp16，保持 fp32
+                # 正式配置统一 CUDA，使用 fp16 降低模型显存占用。
+                # 总显存需求还受输入长度、批量大小与并发进程数影响。
                 use_fp16=(self.device == 'cuda'))
 
             logger.info("BGE-M3 model loaded successfully")
