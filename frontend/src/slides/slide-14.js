@@ -22,7 +22,7 @@ window.slideDataMap.set(14, `
       <div class="bg-slate-800/50 border border-purple-500/30 rounded-xl p-6 flex flex-col">
         <div class="w-12 h-12 rounded-full bg-purple-500/20 border border-purple-400/50 flex items-center justify-center font-mono text-purple-300 text-sm mb-4">P</div>
         <h3 class="text-base font-bold text-white mb-2">context_precision</h3>
-        <p class="text-slate-400 text-sm leading-relaxed flex-1">上下文精确度：召回片段相关。</p>
+        <p class="text-slate-400 text-sm leading-relaxed flex-1">上下文排序精确度：相关片段优先排列。</p>
       </div>
       <div class="bg-slate-800/50 border border-cyan-500/30 rounded-xl p-6 flex flex-col">
         <div class="w-12 h-12 rounded-full bg-cyan-500/20 border border-cyan-400/50 flex items-center justify-center font-mono text-cyan-300 text-sm mb-4">C</div>
@@ -32,7 +32,7 @@ window.slideDataMap.set(14, `
     </div>
     <div class="mt-5 grid grid-cols-2 gap-5">
       <div class="bg-slate-900/40 border border-slate-700 rounded-lg px-6 py-4"><p class="text-slate-300 text-base"><span class="text-cyan-300 font-semibold">闭环：</span>离线评估 → 定位弱项 → 调参（分块/策略/重排）→ 复测。</p></div>
-      <div class="bg-slate-900/40 border border-slate-700 rounded-lg px-6 py-4"><p class="text-slate-300 text-base"><span class="text-cyan-300 font-semibold">下一步：</span>持续采集评估分数，建立量化看板指导迭代。</p></div>
+      <div class="bg-slate-900/40 border border-slate-700 rounded-lg px-6 py-4"><p class="text-slate-300 text-base"><span class="text-cyan-300 font-semibold">评测记录：</span>逐题保存四项评分、有效数与裁判来源，固定题集配对比较。</p></div>
     </div>
   </div>
 </div>

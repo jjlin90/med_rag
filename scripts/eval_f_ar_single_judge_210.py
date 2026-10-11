@@ -1,12 +1,12 @@
 """
 全量 210 题 F+AR 配对复评（独立单裁判，扁平并发 + 重试退避）
 ==============================================================
-- 单一固定裁判同时对「原答案」和「grounding 答案」打分（配对比较，裁判偏差两次抵消）
+- 单一固定裁判同时对「原答案」和「grounding 答案」打分，使用完整配对样本比较
 - 扁平 ThreadPoolExecutor（max_workers 可控），每题 4 次顺序调用，避免嵌套死锁
 - 每次调用失败自动指数退避重试（应对 429/timeout）
 用法：python scripts/eval_f_ar_single_judge_210.py [--n N] [--workers W]
 """
-import argparse, json, os, re, sys, time
+import argparse, json, os, sys, time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -16,8 +16,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
-import numpy as np
 from openai import OpenAI
+from scripts.eval_score_utils import (parse_judge_score, make_pair_row,
+                                     summarize_pairs, validate_frozen_contexts,
+                                     require_independent_judge)
 
 ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
 JUDGE = os.getenv("EVAL_JUDGE", "glm-4.5-air")
@@ -76,13 +78,14 @@ def score(c, prompt, max_retry=3):
                 messages=[{"role": "system", "content": SYS}, {"role": "user", "content": prompt}],
                 temperature=0.01, max_tokens=MAX_TOKENS, timeout=45)
             txt = r.choices[0].message.content or ""
+            if r.choices[0].finish_reason != 'stop':
+                raise RuntimeError('Judge response did not finish normally')
             if not txt.strip():
                 # 空内容多为额度耗尽或 max_tokens 被推理 token 吃满，显式报错
                 raise RuntimeError(
                     f"empty content (finish={r.choices[0].finish_reason}, "
                     f"max_tokens={MAX_TOKENS})")
-            m = re.search(r'"score"\s*:\s*(\d+\.?\d*)', txt)
-            return min(1.0, max(0.0, float(m.group(1)))) if m else 0.0
+            return parse_judge_score(txt)
         except Exception as e:
             # 1113 是账户/资源包不可用，不是瞬时限流；重试只会制造大量
             # 无效请求。返回 None，由整题失败逻辑显式剔除。
@@ -98,18 +101,13 @@ def score(c, prompt, max_retry=3):
     return None
 
 def eval_one(c, q, oa, ga, ctx):
-    ct = "\n".join(ctx[:3]) if ctx else "(无)"
+    ct = "\n".join(ctx) if ctx else "(无)"
     fo = score(c, build(F_P, ctx=ct, ans=oa))
     aro = score(c, build(AR_P, q=q, ans=oa))
-    fg = score(c, build(F_P, ctx=ct, ans=ga)) if ga else 0.0
-    arg = score(c, build(AR_P, q=q, ans=ga)) if ga else 0.0
+    fg = score(c, build(F_P, ctx=ct, ans=ga)) if ga else None
+    arg = score(c, build(AR_P, q=q, ans=ga)) if ga else None
     # 任一打分失败（None）→ 整题作废，不参与均值，避免静默 0 污染结论
-    if any(v is None for v in (fo, aro, fg, arg)):
-        return {"q": q, "failed": True}
-    return {"q": q, "oF": round(fo, 3), "oAR": round(aro, 3),
-            "gF": round(fg, 3), "gAR": round(arg, 3),
-            "dF": round(fg - fo, 3), "dAR": round(arg - aro, 3),
-            "failed": False}
+    return make_pair_row(q, fo, aro, fg, arg)
 
 def main():
     p = argparse.ArgumentParser()
@@ -132,8 +130,11 @@ def main():
     om = {it["question"]: it for it in orig}
     gm = {}
     grounded_models = set()
+    grounded_records = []
     if grnd_path.exists():
-        for g in json.loads(grnd_path.read_text(encoding="utf-8")):
+        grounded_records = json.loads(grnd_path.read_text(encoding="utf-8"))
+        validate_frozen_contexts(orig, grounded_records)
+        for g in grounded_records:
             gm[g["question"]] = g.get("answer") or g.get("grounded_answer", "")
             model = (g.get("_gen_model") or "").strip()
             if model:
@@ -147,6 +148,8 @@ def main():
             f"裁判 {JUDGE!r} 与 grounded 生成模型重合（{models}）。"
             "请更换 EVAL_JUDGE；仅调试时才使用 --allow-self-judge。"
         )
+    if not a.allow_self_judge:
+        require_independent_judge(JUDGE, orig, grounded_records)
 
     items = [(q, om[q].get("answer", ""), gm.get(q, ""), om[q].get("contexts", [])) for q in om]
     if a.n:
@@ -187,41 +190,21 @@ def main():
                 print(f"[{done[0]}/{len(items)}] {tag} "
                       f"({rate:.1f}q/min, {elapsed:.0f}s)", flush=True)
 
-    valid = [r for r in rows if r and not r.get("failed")]
-    n_fail = len(rows) - len(valid)
-    if not valid:
-        print(f"\n!! 全部 {len(rows)} 题打分失败，无有效结果（多为额度耗尽）。", flush=True)
-        return
-    print(f"\n有效 {len(valid)} 题 | 失败作废 {n_fail} 题", flush=True)
+    summary, n_valid = summarize_pairs(rows)
+    n_fail = len(rows) - n_valid
+    print(f"\n有效 {n_valid} 题 | 缺失配对 {n_fail} 题", flush=True)
+    print(json.dumps(summary, ensure_ascii=False), flush=True)
 
-    dF = np.array([r["dF"] for r in valid]); dAR = np.array([r["dAR"] for r in valid])
-    oF = np.array([r["oF"] for r in valid]); oAR = np.array([r["oAR"] for r in valid])
-    gF = np.array([r["gF"] for r in valid]); gAR = np.array([r["gAR"] for r in valid])
-    cp, cr, w = 0.636, 0.559, 0.25
-    oc = w * (np.mean(oF) + np.mean(oAR) + cp + cr)
-    nc = w * (np.mean(gF) + np.mean(gAR) + cp + cr)
-
-    print(f"\n{'='*55}", flush=True)
-    print(f"汇总 ({len(valid)}题有效 / {len(rows)}题, {time.time()-t0:.0f}s)", flush=True)
-    print(f"{'='*55}", flush=True)
-    for l, ov, nv, dv in [("F", np.mean(oF), np.mean(gF), np.mean(dF)),
-                          ("AR", np.mean(oAR), np.mean(gAR), np.mean(dAR)),
-                          ("CP", cp, cp, 0), ("CR", cr, cr, 0)]:
-        print(f"{l:<6} {ov:>7.3f} {nv:>7.3f} {dv:>+7.3f}", flush=True)
-    print(f"{'-'*35}", flush=True)
-    print(f"综合   {oc:>7.3f} {nc:>7.3f} {nc-oc:>+7.3f}", flush=True)
-
-    out = {"judge": JUDGE, "method": "custom_direct_llm_judge_flat_concurrent",
+    out = {"engine": "custom_direct_llm_judge", "judge": JUDGE, "method": "custom_direct_llm_judge_flat_concurrent",
            "metric_compatibility": "not directly comparable to Ragas scores",
-           "n": len(valid), "n_failed": n_fail, "workers": a.workers,
+           "aggregation_note": "Only complete F/AR pairs; no cross-engine CP/CR composite.",
+           "self_judge_allowed": a.allow_self_judge,
+           "n": n_valid, "n_total": len(rows), "n_failed": n_fail, "workers": a.workers,
            "max_tokens": MAX_TOKENS,
            "orig_file": str(ORIG), "grnd_file": str(grnd_path),
-           "summary": {"orig": {"F": round(float(np.mean(oF)), 4), "AR": round(float(np.mean(oAR)), 4)},
-                       "grnd": {"F": round(float(np.mean(gF)), 4), "AR": round(float(np.mean(gAR)), 4)},
-                       "delta": {"F": round(float(np.mean(dF)), 4), "AR": round(float(np.mean(dAR)), 4)},
-                       "composite_old": round(oc, 4), "composite_new": round(nc, 4)},
-           "per_question": valid}
-    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+           "summary": summary, "per_question": rows}
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print(f"\n已存: {out_path}", flush=True)
 
 if __name__ == "__main__":

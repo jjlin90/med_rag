@@ -117,10 +117,8 @@ class Config:
         self.LLM_TEMPERATURE = 0.2
         self.LLM_MAX_TOKENS = 1024
         # grounding 硬约束（默认开启）：生成阶段强制"只基于检索上下文作答、不足即拒答"，
-        # 抑制 LLM 参数化补刀导致的 faithfulness 下降。两轮全量配对复评实测：
-        #   离线轮 glm-4.7 裁判 / 210 题：F 0.259→0.464（ΔF=+0.21），AR 0.538→0.470（ΔAR=-0.07）
-        #   线上轮 glm-4.5-air 裁判 / 207 题有效（真实服务链路重生成）：F 0.713→0.964（ΔF=+0.25），AR 0.841→0.698（ΔAR=-0.14）
-        # 注：早期 30 题抽样曾估 ΔF=+0.42，系小样本方差大所致，已被全量修正。
+        # 抑制无依据扩展；质量变化由同题、同上下文、同裁判的完整配对报告核验。
+        # 历史自定义裁判实验与正式 Ragas 评分分别留档，不拼接两种口径。
         # 置 LLM_GROUNDING=false 可切回宽松模式，用于复现"无 grounding vs 有 grounding"的 A/B 对比。
         self.LLM_GROUNDING = os.getenv("LLM_GROUNDING", "true").lower() in ("1", "true", "yes", "on")
         # 可选事实复核：生成后核对实体、条件、单位与原文依据；失败沿用原文降级。

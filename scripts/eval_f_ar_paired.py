@@ -1,13 +1,8 @@
 """
 全量 210 题 Faithfulness + AnswerRelevancy 配对复评（同裁判）
 ==========================================================
-用智谱官方 glm-4.7 作为唯一裁判，分别对「原答案」和「grounding 重生成答案」
-打分，配对比较 ΔF / ΔAR。CP/CR 不变（contexts 未改），沿用原值。
-
-额度估算：
-  生成 ~210 条答案 ≈ 10 万 token
-  裁判 210×2 (orig+grounded) × 2指标 ≈ 374 万 token
-  总计 ≈ 384 万 < glm-4.7 的 500 万免费额度
+使用指定的独立裁判，分别对原答案和重生成答案评分；
+只在同题、同上下文且两侧 F/AR 均有效时汇总，不拼接历史 CP/CR。
 
 用法：
   python scripts/eval_f_ar_paired.py [--n N] [--judge-model MODEL] [--answers FILE]
@@ -31,7 +26,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
-import numpy as np
+from scripts.eval_score_utils import (valid_score, make_pair_row, summarize_pairs,
+                                     validate_frozen_contexts, require_independent_judge)
 
 # ===================== 常量 =====================
 SRC = PROJECT_ROOT / "data/test_query/eval_final_merged.json"
@@ -78,6 +74,8 @@ def generate_grounding_zhipu(client, question, contexts):
             temperature=1,
             max_tokens=1024,
         )
+        if r.choices[0].finish_reason != 'stop':
+            raise RuntimeError('Generation did not finish normally')
         return r.choices[0].message.content or ""
     except Exception as e:
         print(f"  [生成失败] {question[:30]}...: {str(e)[:80]}")
@@ -105,34 +103,29 @@ def eval_f_ar_ragas(items, judge_model, label=""):
     old_temp = os.environ.get("LLM_JUDGE_TEMPERATURE")
     os.environ["LLM_BASE_URL"] = ZHIPU_BASE
     os.environ["LLM_MODEL_NAME"] = judge_model
-    os.environ["LLM_JUDGE_TEMPERATURE"] = "1"  # 智谱兼容：配对比较消除了随机性偏差
-
-    from src.config.settings import Config
-    cfg = Config()
-    evaluator = RAGEvaluator(cfg)
-    result = evaluator.evaluate_dataset(items)  # 无 ground_truth → 只跑 F+AR
-
-    # 恢复环境变量
-    if old_base is not None:
-        os.environ["LLM_BASE_URL"] = old_base
-    else:
-        os.environ.pop("LLM_BASE_URL", None)
-    if old_model is not None:
-        os.environ["LLM_MODEL_NAME"] = old_model
-    else:
-        os.environ.pop("LLM_MODEL_NAME", None)
-    if old_temp is not None:
-        os.environ["LLM_JUDGE_TEMPERATURE"] = old_temp
-    else:
-        os.environ.pop("LLM_JUDGE_TEMPERATURE", None)
+    os.environ["LLM_JUDGE_TEMPERATURE"] = "1"  # 两侧保持一致；配对不能消除采样随机性
+    try:
+        from src.config.settings import Config
+        cfg = Config()
+        evaluator = RAGEvaluator(cfg)
+        result = evaluator.evaluate_dataset(items)  # 无 ground_truth → 只跑 F+AR
+        if result.get('engine') != 'ragas':
+            raise RuntimeError('Paired Ragas comparison cannot substitute a fallback engine')
+    finally:
+        for key, previous in (('LLM_BASE_URL', old_base), ('LLM_MODEL_NAME', old_model),
+                              ('LLM_JUDGE_TEMPERATURE', old_temp)):
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
 
     scores = {}
     if result.get("scores"):
         for s in result["scores"]:
             q = s.get("question", "")
             scores[q] = {
-                "faithfulness": s.get("faithfulness", 0) or 0,
-                "answer_relevancy": s.get("answer_relevancy", 0) or 0,
+                "faithfulness": s.get("faithfulness") if valid_score(s.get("faithfulness")) else None,
+                "answer_relevancy": s.get("answer_relevancy") if valid_score(s.get("answer_relevancy")) else None,
             }
     return scores
 
@@ -177,9 +170,12 @@ def main():
     print(f"合并后: {len(items)} 题")
 
     # ---- 准备 grounded 答案 ----
+    ga = []
     grounded_path = Path(args.answers) if args.answers else None
     if grounded_path and grounded_path.exists():
         ga = json.loads(grounded_path.read_text(encoding="utf-8"))
+        validate_frozen_contexts(items, ga)
+        require_independent_judge(judge_model, orig_all, ga)
         # 兼容两种 key 名：grounded_answer / answer
         grounded_map = {}
         for g in ga:
@@ -188,7 +184,7 @@ def main():
         print(f"加载预生成 grounded 答案: {len(grounded_map)} 条")
     else:
         grounded_map = {}
-        print("无预生成答案，将在线生成（TokenHub 链）...")
+        print("无预生成答案，将在线生成（智谱 glm-4.7）...")
 
     # ---- 构建两批 items（故意不传 ground_truth → Ragas 只跑 F+AR） ----
     orig_items = []
@@ -197,7 +193,7 @@ def main():
     gen, gen_model = None, "glm-4.7(zhipu)"
     need_gen = []
 
-    for it in items:
+    for item_index, it in enumerate(items):
         q = it["question"]
         ctxs = it.get("contexts", [])
 
@@ -212,7 +208,7 @@ def main():
         if q in grounded_map:
             ans_g = grounded_map[q]
         else:
-            need_gen.append((q, ctxs))
+            need_gen.append((item_index, q, ctxs))
             ans_g = ""  # 占位
 
         grnd_items.append({
@@ -223,26 +219,34 @@ def main():
 
     # 在线生成缺失的 grounded 答案（用智谱 glm-4.7）
     if need_gen:
+        if judge_model == 'glm-4.7':
+            parser.error('在线生成使用 glm-4.7，请选择不同的独立裁判')
+        require_independent_judge(judge_model, orig_all)
         print(f"\n需在线生成 {len(need_gen)} 条 grounded 答案（智谱 glm-4.7）...")
         zhipu_client = get_zhipu_client()
         gen_idx = 0
-        for i, (q, ctxs) in enumerate(need_gen):
+        for i, (item_index, q, ctxs) in enumerate(need_gen):
             ans = generate_grounding_zhipu(zhipu_client, q, ctxs)
             if ans and len(ans.strip()) > 3:
-                grnd_items[i]["answer"] = ans
+                grnd_items[item_index]["answer"] = ans
                 grounded_map[q] = ans
                 gen_idx += 1
             else:
-                grnd_items[i]["answer"] = f"[生成失败] {q}"
+                grnd_items[item_index]["answer"] = ""
             if (i + 1) % 20 == 0:
                 print(f"  生成进度: {i+1}/{len(need_gen)} (成功 {gen_idx})")
         print(f"生成完成: {gen_idx}/{len(need_gen)} 成功")
 
         # 保存完整 grounded 答案供后续复用
         out_ans = PROJECT_ROOT / "data/test_query/_paired_grounding_answers.json"
+        out_ans.parent.mkdir(parents=True, exist_ok=True)
         out_ans.write_text(
             json.dumps([
-                {"question": it["question"], "grounded_answer": it["answer"]}
+                {"question": it["question"], "grounded_answer": it["answer"],
+                 "contexts": it['contexts'],
+                 "_gen_model": 'glm-4.7' if it['question'] in {q for _, q, _ in need_gen}
+                               else next((g.get('_gen_model') for g in ga
+                                          if g['question'] == it['question']), None)}
                 for it in grnd_items
             ], ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -271,106 +275,37 @@ def main():
     t2 = time.time()
     print(f"Grounded 评估完成: {len(scores_g)} 条有效分数, 耗时 {t2-t1:.0f}s")
 
-    # ---- 配对比较 ----
-    print(f"\n{'='*60}")
-    print(f"配对比较（同裁判 {judge_model}）")
-    print(f"{'='*60}")
-
-    deltas = []  # (ΔF, ΔAR)
-    per_q = {}
-
-    for it in valid_orig:
-        q = it["question"]
-        so = scores_o.get(q, {})
-        sg = scores_g.get(q, {})
-        f_o = so.get("faithfulness", 0) or 0
-        ar_o = so.get("answer_relevancy", 0) or 0
-        f_g = sg.get("faithfulness", 0) or 0
-        ar_g = sg.get("answer_relevancy", 0) or 0
-
-        df = f_g - f_o
-        dar = ar_g - ar_o
-        deltas.append((df, dar))
-        per_q[q] = {
-            "orig_F": round(f_o, 4),
-            "orig_AR": round(ar_o, 4),
-            "grnd_F": round(f_g, 4),
-            "grnd_AR": round(ar_g, 4),
-            "delta_F": round(df, 4),
-            "delta_AR": round(dar, 4),
-        }
-
-    # 汇总统计
-    d_arr = np.array(deltas)
-    mean_df = np.mean(d_arr[:, 0]) if len(deltas) else 0
-    mean_dar = np.mean(d_arr[:, 1]) if len(deltas) else 0
-    med_df = np.median(d_arr[:, 0]) if len(deltas) else 0
-    med_dar = np.median(d_arr[:, 1]) if len(deltas) else 0
-
-    orig_f_mean = np.mean([so.get("faithfulness", 0) or 0 for so in scores_o.values()])
-    orig_ar_mean = np.mean([so.get("answer_relevancy", 0) or 0 for so in scores_o.values()])
-    grnd_f_mean = np.mean([sg.get("faithfulness", 0) or 0 for sg in scores_g.values()])
-    grnd_ar_mean = np.mean([sg.get("answer_relevancy", 0) or 0 for sg in scores_g.values()])
-
-    # 输出表格
-    header = f"{'问题':<40} {'ΔF':>7} {'ΔAR':>7} {'原F':>6} {'原AR':>6} {'新F':>6} {'新AR':>6}"
-    print(header)
-    print("-" * len(header))
-
-    for q, v in sorted(per_q.items(), key=lambda x: -abs(x[1]["delta_F"]))[:30]:
-        qlabel = q[:38] + ".." if len(q) > 40 else q
-        print(f"{qlabel:<40} {v['delta_F']:>+7.3f} {v['delta_AR']:>+7.3f} "
-              f"{v['orig_F']:>6.3f} {v['orig_AR']:>6.3f} "
-              f"{v['grnd_F']:>6.3f} {v['grnd_AR']:>6.3f}")
-
-    if len(per_q) > 30:
-        print(f"... 共 {len(per_q)} 题，前 30 按 |ΔF| 排序")
-
-    print("-" * len(header))
-    print(f"{'均值':<40} {mean_df:>+7.3f} {mean_dar:>+7.3f} "
-          f"{orig_f_mean:>6.3f} {orig_ar_mean:>6.3f} "
-          f"{grnd_f_mean:>6.3f} {grnd_ar_mean:>6.3f}")
-    print(f"{'中位数':<40} {med_df:>+7.3f} {med_dar:>+7.3f}")
-
-    # 综合分（用原 CP/CR）
-    cp_old = 0.636
-    cr_old = 0.559
-    w = 0.25
-    old_composite = w * (orig_f_mean + orig_ar_mean + cp_old + cr_old)
-    new_composite = w * (grnd_f_mean + grnd_ar_mean + cp_old + cr_old)
-
-    print(f"\n{'='*60}")
-    print(f"综合分对比（CP={cp_old}, CR={cr_old} 不变）")
-    print(f"{'='*60}")
-    print(f"  原综合 = .25×({orig_f_mean:.3f}+{orig_ar_mean:.3f}+{cp_old}+{cr_old}) = {old_composite:.3f}")
-    print(f"  新综合 = .25×({grnd_f_mean:.3f}+{grnd_ar_mean:.3f}+{cp_old}+{cr_old}) = {new_composite:.3f}")
-    print(f"  Δ综合 = {new_composite - old_composite:+.3f}")
-
-    # ---- 保存结果 ----
+    # 汇总只使用两侧 F/AR 都有效的同题配对；失败题保留 null 明细。
+    rows = []
+    for it in items:
+        q = it['question']
+        so, sg = scores_o.get(q, {}), scores_g.get(q, {})
+        rows.append(make_pair_row(q, so.get('faithfulness'), so.get('answer_relevancy'),
+                                  sg.get('faithfulness'), sg.get('answer_relevancy')))
+    summary, n_complete = summarize_pairs(rows)
+    summary['grounded'] = summary.pop('grnd')
+    per_q = {r['q']: {'orig_F': r['oF'], 'orig_AR': r['oAR'],
+                       'grnd_F': r['gF'], 'grnd_AR': r['gAR'],
+                       'delta_F': r['dF'], 'delta_AR': r['dAR'],
+                       'failed': r['failed']} for r in rows}
     output = {
-        "judge_model": judge_model,
-        "judge_base_url": ZHIPU_BASE,
-        "n_questions": len(per_q),
-        "n_valid_orig": len(scores_o),
-        "n_valid_grnd": len(scores_g),
-        "gen_model_used": gen_model,
-        "summary": {
-            "orig": {"F": round(orig_f_mean, 4), "AR": round(orig_ar_mean, 4)},
-            "grounded": {"F": round(grnd_f_mean, 4), "AR": round(grnd_ar_mean, 4)},
-            "delta": {"F": round(mean_df, 4), "AR": round(mean_dar, 4)},
-            "composite_old": round(old_composite, 4),
-            "composite_new": round(new_composite, 4),
-            "composite_delta": round(new_composite - old_composite, 4),
-            "context_precision": cp_old,
-            "context_recall": cr_old,
-        },
-        "per_question": per_q,
+        'engine': 'ragas', 'judge_model': judge_model, 'judge_base_url': ZHIPU_BASE,
+        'n_questions': len(items), 'n_complete_pairs': n_complete,
+        'n_failed_pairs': len(items) - n_complete,
+        'n_valid_orig': sum(all(valid_score(s.get(k)) for k in
+                               ('faithfulness', 'answer_relevancy')) for s in scores_o.values()),
+        'n_valid_grnd': sum(all(valid_score(s.get(k)) for k in
+                               ('faithfulness', 'answer_relevancy')) for s in scores_g.values()),
+        'aggregation_note': 'All means use the same complete pairs; only F/AR are evaluated.',
+        'summary': summary, 'per_question': per_q,
     }
+    out_file = PROJECT_ROOT / 'data/test_query/_eval_f_ar_paired.json'
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False),
+                        encoding='utf-8')
+    print(json.dumps(summary, ensure_ascii=False))
+    print(f'完整配对 {n_complete}/{len(items)}；结果已保存: {out_file}')
 
-    out_file = PROJECT_ROOT / "data/test_query/_eval_f_ar_paired.json"
-    out_file.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n结果已存: {out_file}")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

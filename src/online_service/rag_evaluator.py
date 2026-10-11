@@ -4,7 +4,7 @@ RAG 评估模块（基于 Ragas 0.2.x，对齐 EduRag 的 ragas_evaluate.py）
 四项核心指标（与参考脚本一致）：
 1. faithfulness（忠实度）       —— 回答是否完全基于给定上下文，无幻觉/编造。
 2. answer_relevancy（答案相关性）—— 回答是否切题、完整、有针对性地回应问题。
-3. context_precision（上下文精确度）—— 检索到的上下文是否聚焦、仅含相关信息。
+3. context_precision（上下文排序精确度）—— 相关上下文是否优先出现在返回列表中。
 4. context_recall（上下文召回率）  —— 上下文是否覆盖回答/标准答案所需的全部关键信息。
 
 数据格式（与参考脚本 ragas_evaluate.py 对齐，采用 Ragas v1 字段名，会自动转换为 v2）：
@@ -287,7 +287,7 @@ class RAGEvaluator:
                 v = rows[i].get(k) if i < len(rows) else None
                 # Ragas 的 API/解析失败通常表现为 NaN。保留为 null，不能把
                 # “没评出来”伪装成质量 0 分并拖低均值。
-                row[k] = (round(float(v), 4)
+                row[k] = (float(v)
                           if valid_metric_score(v)
                           else None)
             scores.append(row)

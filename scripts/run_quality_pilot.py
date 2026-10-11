@@ -26,6 +26,10 @@ METRICS = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_rec
 FOCUSED_RULES = """\n补充输出要求：只回答用户实际询问的目标和必要条件，通常用1～3句；方法类可列最多4个直接相关要点，不能为缩短而丢掉必要限制。不要列未被问到的其他疾病、检查、背景或通用医嘱。
 先区分一般事实与这个人的诊断：只给有依据的一般规律，不能排除知识未讨论的原因。缺少具体起效时间、疗程等细节时，简要提供已知作用并指出该细节未说明，不编造时间。用户只问是否有关或是否会遗传时，回答知识支持的关系，不自行扩展到未询问的概率和复杂传递规则。数字、单位及其成立条件保持原意。"""
 
+FOCUSED_RULES_V2 = """\n补充输出要求：先在内部明确用户询问的对象和任务（原因、关系、风险、时间或方法），再从证据中挑选直接回答该任务的事实。输出通常为2～3个短句；护理或操作方法最多4个要点。首句回答该任务，后续只补充必要条件。不要展开其他疾病、未询问的发病率、群体死亡人数或完整诊疗流程。
+只要有部分证据，先明确给出有依据的部分，再具体说明哪个细节没有提供；不要用整段泛化拒答代替可以回答的事实。证据缺失时仍必须如实说明，不得为了完整作答增加外部信息。个人诊断与一般事实分别说明，不能根据症状直接确诊或排除疾病。
+处理体重、剂量、比例和时间时，保留原文基准与适用条件；缺少初始体重时不把公斤换算成百分比。重复注射周期不等于首次起效时间；资料没有疗程信息时不推断长期用药。保持必要的不确定性，不将条件性结论改成确定结论。"""
+
 
 
 def read(path):
@@ -93,6 +97,8 @@ def prepare(out, cfg, variant='title-only'):
             candidate.pop(key,None)
         if variant == 'focused':
             candidate['system_prompt'] += FOCUSED_RULES
+        elif variant == 'focused-v2':
+            candidate['system_prompt'] += FOCUSED_RULES_V2
     manifest['candidate_variant'] = variant
     write(out / 'items.json', [dict(index=i+1, question=items[i]['question'],
                                   ground_truth=items[i]['ground_truth']) for i in indices])
@@ -539,7 +545,7 @@ def main():
     parser.add_argument('--workers',type=int,choices=[1,2,3,4],default=3)
     parser.add_argument('--judge-model',default='Qwen/Qwen3-30B-A3B-Instruct-2507')
     parser.add_argument('--ar-language',choices=['default','chinese'],default='chinese')
-    parser.add_argument('--variant',choices=['focused','title-only','review'],default='title-only',
+    parser.add_argument('--variant',choices=['focused','focused-v2','title-only','review'],default='title-only',
                         help='New manifests only; existing experiment prompts remain frozen.')
     args = parser.parse_args()
     cfg = Config()

@@ -1,0 +1,57 @@
+{
+  "kind": "measured_development_comparison",
+  "measured": true,
+  "date": "2026-10-11",
+  "sample_size": 20,
+  "complete_pairs": 20,
+  "generation_model": "deepseek-ai/DeepSeek-V4-Flash",
+  "judge_model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+  "ragas_version": "0.2.6",
+  "answer_relevancy_language": "chinese",
+  "scope": "Fixed development sample, frozen contexts, answer-only prompt comparison; not a full 210-question evaluation.",
+  "averages": {
+    "baseline": {
+      "faithfulness": 0.9195,
+      "answer_relevancy": 0.6947,
+      "context_precision": 0.95,
+      "context_recall": 0.975
+    },
+    "candidate": {
+      "faithfulness": 0.9091,
+      "answer_relevancy": 0.6897,
+      "context_precision": 0.95,
+      "context_recall": 0.975
+    }
+  },
+  "delta": {
+    "faithfulness": -0.0104,
+    "answer_relevancy": -0.0051,
+    "context_precision": 0.0,
+    "context_recall": 0.0
+  },
+  "paired_bootstrap_95ci": {
+    "faithfulness": [
+      -0.09094246531246533,
+      0.06704011044511045
+    ],
+    "answer_relevancy": [
+      -0.036731771312934175,
+      0.03038379913390955
+    ],
+    "context_precision": [
+      0.0,
+      0.0
+    ],
+    "context_recall": [
+      0.0,
+      0.0
+    ]
+  },
+  "decision": "Keep previous version; focused-v2 does not improve paired F/AR and retains an unsupported weight assumption.",
+  "metric_note": "Context Precision measures ranked precision; it is not the context relevance target.",
+  "reuse_note": "Baseline scores reused for identical answers and evidence; candidate CP/CR reused for identical question, contexts and reference. Candidate F/AR newly evaluated.",
+  "manifest_sha256": "0e018bb4b17a1015aa9d8f831898fc0138550ebd096b32e50025d81913dd0a63",
+  "answers_sha256": "ffd98e1e44b6895606addb190b0c7a7784eed51039e708e21c2cbfade55ba100",
+  "scores_sha256": "ac79d6e57a5c3bee81a8bdd887dd163033e36ab1599bd0dec310f7626d00a6a3",
+  "private_evidence": "artifacts/quality_20261011/focused_v2/"
+}

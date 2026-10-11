@@ -101,12 +101,13 @@ def print_and_save(result: Dict[str, Any], out_json: str, out_csv: str) -> None:
         import pandas as pd
         rows = []
         for s in scores:
-            rows.append({k: s.get(k, 0.0) for k in metrics})
+            rows.append({k: s.get(k) for k in metrics})
             rows[-1]["question"] = s.get("question", "")
-        avg_row = {k: avg.get(k, 0.0) for k in metrics}
+        avg_row = {k: avg.get(k) for k in metrics}
         avg_row["question"] = "__average__"
         rows.append(avg_row)
         df = pd.DataFrame(rows, columns=["question"] + metrics)
+        Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_csv, index=False, encoding="utf-8-sig")
         print(f"CSV 结果已保存: {out_csv}")
     except Exception as e:

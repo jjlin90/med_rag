@@ -7,7 +7,6 @@
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -17,8 +16,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
-import numpy as np
 from openai import OpenAI
+from scripts.eval_score_utils import (parse_judge_score, make_pair_row, summarize_pairs,
+                                     validate_frozen_contexts, require_independent_judge)
 
 ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
 JUDGE = "glm-4.7"
@@ -45,11 +45,13 @@ def build(template, **kw):
 def score(c, prompt):
     try:
         r = c.chat.completions.create(model=JUDGE, messages=[{"role":"system","content":SYS},{"role":"user","content":prompt}], temperature=0.01, max_tokens=40, timeout=60)
-        m = re.search(r'"score"\s*:\s*(\d+\.?\d*)', r.choices[0].message.content or "")
-        return min(1.0, max(0.0, float(m.group(1)))) if m else 0.0
+        if r.choices[0].finish_reason != 'stop':
+            raise RuntimeError('Judge response did not finish normally')
+        return parse_judge_score(r.choices[0].message.content)
     except Exception as e:
-        print(f"    [err] {str(e)[:60]}")
-        return 0.0
+        print(f'    [err] {type(e).__name__}')
+        return None
+
 
 def main():
     p = argparse.ArgumentParser(); p.add_argument("--n", type=int, default=0); p.add_argument("--answers", type=str, default="")
@@ -59,8 +61,11 @@ def main():
     om = {it["question"]: it for it in orig}
     gp = Path(a.answers) if a.answers else GRND_D
     gm = {}
-    if gp.exists():
-        for g in json.loads(gp.read_text(encoding="utf-8")):
+    grounded = json.loads(gp.read_text(encoding='utf-8')) if gp.exists() else []
+    validate_frozen_contexts(orig, grounded)
+    require_independent_judge(JUDGE, orig, grounded)
+    if grounded:
+        for g in grounded:
             gm[g["question"]] = g.get("answer") or g.get("grounded_answer", "")
 
     items = [(q, om[q].get("answer",""), gm.get(q,""), om[q].get("contexts",[])) for q in om]
@@ -71,39 +76,30 @@ def main():
     rows, t0 = [], time.time()
 
     for i, (q, oa, ga, ctx) in enumerate(items):
-        ct = "\n".join(ctx[:3]) if ctx else "(无)"
+        ct = "\n".join(ctx) if ctx else "(无)"
         fo = score(c, build(F_P, ctx=ct, ans=oa))
         aro = score(c, build(AR_P, q=q, ans=oa))
-        fg = score(c, build(F_P, ctx=ct, ans=ga)) if ga else 0.0
-        arg = score(c, build(AR_P, q=q, ans=ga)) if ga else 0.0
-        r = {"q": q, "oF": round(fo,3), "oAR": round(aro,3), "gF": round(fg,3), "gAR": round(arg,3), "dF": round(fg-fo,3), "dAR": round(arg-aro,3)}
+        fg = score(c, build(F_P, ctx=ct, ans=ga)) if ga else None
+        arg = score(c, build(AR_P, q=q, ans=ga)) if ga else None
+        r = make_pair_row(q, fo, aro, fg, arg)
         rows.append(r)
         elapsed = time.time() - t0
-        rate = (i+1)/elapsed*60 if elapsed > 0 else 0
-        print(f"[{i+1}/{len(items)}] ΔF={r['dF']:+.2f} ΔAR={r['dAR']:+.2f} ({rate:.1f}q/min, {elapsed:.0f}s)", flush=True)
+        print(f'[{i+1}/{len(items)}] complete={not r["failed"]} ({elapsed:.0f}s)', flush=True)
 
-    dF=np.array([r["dF"] for r in rows]); dAR=np.array([r["dAR"] for r in rows])
-    oF=np.array([r["oF"] for r in rows]); oAR=np.array([r["oAR"] for r in rows])
-    gF=np.array([r["gF"] for r in rows]); gAR=np.array([r["gAR"] for r in rows])
-    cp, cr, w = 0.636, 0.559, 0.25
-    oc, nc = w*(np.mean(oF)+np.mean(oAR)+cp+cr), w*(np.mean(gF)+np.mean(gAR)+cp+cr)
+    summary, n_valid = summarize_pairs(rows)
+    out = {'engine': 'custom_direct_llm_judge', 'judge': JUDGE,
+           'method': 'direct_openai_single_thread',
+           'metric_compatibility': 'not directly comparable to Ragas scores',
+           'aggregation_note': 'Only complete F/AR pairs; no cross-engine CP/CR composite.',
+           'n': n_valid, 'n_total': len(rows), 'n_failed': len(rows) - n_valid,
+           'summary': summary, 'per_question': rows}
+    out_file = PROJECT_ROOT / 'data/test_query/_eval_f_ar_direct.json'
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(json.dumps(out, ensure_ascii=False, indent=2, allow_nan=False),
+                        encoding='utf-8')
+    print(json.dumps(summary, ensure_ascii=False))
+    print(f'完整配对 {n_valid}/{len(rows)}；结果已保存: {out_file}')
 
-    print(f"\n{'='*55}", flush=True)
-    print(f"汇总 ({len(rows)}题, {time.time()-t0:.0f}s)", flush=True)
-    print(f"{'='*55}", flush=True)
-    for l,ov,nv,dv in [("F",np.mean(oF),np.mean(gF),np.mean(dF)),("AR",np.mean(oAR),np.mean(gAR),np.mean(dAR)),("CP",cp,cp,0),("CR",cr,cr,0)]:
-        print(f"{l:<6} {ov:>7.3f} {nv:>7.3f} {dv:>+7.3f}", flush=True)
-    print(f"{'-'*35}", flush=True)
-    print(f"综合   {oc:>7.3f} {nc:>7.3f} {nc-oc:>+7.3f}", flush=True)
 
-    out = {"judge": JUDGE, "method": "direct_openai_single_thread", "n": len(rows),
-           "summary": {"orig":{"F":round(float(np.mean(oF)),4),"AR":round(float(np.mean(oAR)),4)},
-                      "grnd":{"F":round(float(np.mean(gF)),4),"AR":round(float(np.mean(gAR)),4)},
-                      "delta":{"F":round(float(np.mean(dF)),4),"AR":round(float(np.mean(dAR)),4)},
-                      "composite_old":round(oc,4),"composite_new":round(nc,4)},
-           "per_question": rows}
-    (PROJECT_ROOT/"data/test_query/_eval_f_ar_direct.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n已存: data/test_query/_eval_f_ar_direct.json")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
