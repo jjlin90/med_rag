@@ -207,7 +207,10 @@ def main():
             raise RuntimeError('Legacy Redis namespace leaked')
 
         report = {'scope':'Actual production FAQSearch and BM25 with isolated real MySQL, '
-                           'existing real Redis under a private key prefix; no mocked IO or LLM/API calls.',
+                           'real Redis selected by the caller configuration under a private key prefix; '
+                           'this component report does not identify whether Redis is shared or disposable; '
+                           'no mocked IO or LLM/API calls.',
+                  'report_role':'faq_component_intermediate',
                   'dataset_sha256':hashlib.sha256(dataset.read_bytes()).hexdigest(),
                   'faq_count':len(rows), 'original_questions_accepted':controls,
                   'perturbation_count':probes, 'opposite_acceptances':opposite,

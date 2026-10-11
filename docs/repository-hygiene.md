@@ -30,7 +30,7 @@ python scripts/audit_repository.py --output artifacts/repository_audit.json
 python scripts/audit_repository.py --require-local-credentials
 ```
 
-脚本核查所有已跟踪Markdown的本地文件与锚点、36项忽略/保留路径、被忽略规则覆盖的已跟踪文件及本地产物混入。核心检查只需要Python标准库和Git，无GPU、Docker、数据库或模型接口调用；Git索引提供检查范围，因此仅解压源码包时需用`--root`指向对应Git源码工作区。退出码0表示已执行检查通过，1表示发现问题，2表示检查无法完成。默认不修改文件，只有指定`--output`才写报告。
+脚本核查所有已跟踪Markdown的本地文件与锚点、忽略/保留路径、被忽略规则覆盖的已跟踪文件及本地产物混入。每次实际路径探针数见报告的 `ignore_probes`，本地链接及锚点数见 `local_links_checked`；新增路径或文档链接后须重新检查，历史计数不代表后续版本。核心检查只需要Python标准库和Git，无GPU、Docker、数据库或模型接口调用；Git索引提供检查范围，因此仅解压源码包时需用`--root`指向对应Git源码工作区。退出码0表示已执行检查通过，1表示发现问题，2表示检查无法完成。默认不修改文件，只有指定`--output`才写报告。
 
 若根目录存在`.env`，使用项目依赖python-dotenv解析，其中名称包含API_KEY/PASSWORD/TOKEN/SECRET、长度至少8的非占位字面值在已跟踪文件中逐字节比对；不展开变量引用，报告只给出命中文件与配置字段名，不输出凭据值。这是本地环境凭据值核查，范围不包含其他来源的未知密钥或历史提交。克隆后没有本地`.env`时明确标为`skipped_no_local_env`；如主动使用`--skip-local-credentials`则标为`skipped_by_option`，均不作为凭据扫描通过的证据。
 
