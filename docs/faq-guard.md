@@ -56,3 +56,7 @@ python scripts/verify_faq_services.py --dataset data/msd_faq_clean.csv --output 
 ```
 
 首次运行需要本机已有MySQL镜像或能够拉取`mysql:8.0`；可用`--mysql-image`指定兼容镜像。脚本自动创建随机密码、本机随机端口及内存数据目录的临时MySQL实例，Redis仅操作独立随机前缀的测试键。摘要只在验证通过、临时实例及测试键清理完成后生成。验证使用正式Config，因此本机CUDA也需满足项目启动检查。CSV与实际服务需自行准备，脚本随源码包与wheel分发，不依赖私有artifacts脚本。
+
+### 2026-10-11隔离真实服务复跑
+
+本次用临时Redis 7.4与临时MySQL 8复跑同一验收入口，保留现有共享服务：2416条标准问题中2345条接受；165条改写探针的相反类别误接受与非标准问题直答均为0。实际SQL取答、Redis命中不重复查库、缓存问题不一致与空答案拒绝、v2命名空间隔离及TTL均通过，临时MySQL、Redis和测试键已清理。此结果证明隔离真实服务下的FAQ组件行为，未覆盖共享Redis部署、HTTP API或供应商LLM完整链路。摘要与日志见本地 `artifacts/acceptance_20261011/faq_isolated.json` 与 `faq_services.log`，验收范围见[后续复核](review_20261011.md#后续验收范围复核2026-10-11)。
