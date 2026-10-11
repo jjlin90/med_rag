@@ -98,6 +98,37 @@ class EvaluationComparisonTests(unittest.TestCase):
                     eval_f_ar_ragas([], 'judge')
             self.assertEqual([os.environ[k] for k in keys], ['original-url', 'original-model', '0.2'])
 
+    def test_ragas_paired_missing_scores_stay_missing_and_exclude_incomplete_pairs(self):
+        from scripts.eval_f_ar_paired import eval_f_ar_ragas
+        raw_scores = [
+            {'question': 'missing', 'faithfulness': None, 'answer_relevancy': None},
+            {'question': 'absent', 'faithfulness': .7},
+            {'question': 'zero', 'faithfulness': 0, 'answer_relevancy': 0},
+            {'question': 'valid', 'faithfulness': .2, 'answer_relevancy': .4},
+        ]
+        invalid_values = (float('nan'), float('inf'), -.1, 1.1, True, '0.5')
+        raw_scores.extend({'question': f'invalid-{i}', 'faithfulness': value,
+                           'answer_relevancy': value} for i, value in enumerate(invalid_values))
+        with patch('src.config.settings.Config'), patch('src.online_service.rag_evaluator.RAGEvaluator') as cls:
+            cls.return_value.evaluate_dataset.return_value = {'engine': 'ragas', 'scores': raw_scores}
+            scores = eval_f_ar_ragas([], 'independent-judge')
+        self.assertEqual(scores['missing'], {'faithfulness': None, 'answer_relevancy': None})
+        self.assertEqual(scores['absent'], {'faithfulness': .7, 'answer_relevancy': None})
+        self.assertEqual(scores['zero'], {'faithfulness': 0, 'answer_relevancy': 0})
+        for i in range(len(invalid_values)):
+            with self.subTest(invalid_value=i):
+                self.assertEqual(scores[f'invalid-{i}'], {'faithfulness': None, 'answer_relevancy': None})
+        rows = [make_pair_row(q, s['faithfulness'], s['answer_relevancy'],
+                              0 if q == 'zero' else .8, 0 if q == 'zero' else .6)
+                for q, s in scores.items()]
+        summary, complete = summarize_pairs(rows)
+        self.assertEqual(complete, 2)
+        self.assertEqual(summary, {'orig': {'F': .1, 'AR': .2},
+                                   'grnd': {'F': .4, 'AR': .3},
+                                   'delta': {'F': .3, 'AR': .1}})
+        self.assertEqual(sum(row['failed'] for row in rows), len(raw_scores) - 2)
+        json.dumps(rows, allow_nan=False)
+
     def test_csv_missing_metric_stays_blank_and_nested_output_is_created(self):
         from scripts.evaluate_rag import print_and_save
         with tempfile.TemporaryDirectory() as directory:

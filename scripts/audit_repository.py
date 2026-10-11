@@ -28,6 +28,7 @@ ALLOWED_PATHS = (
     'scripts/verify_faq_services.py', 'scripts/check_completion_gate.py',
     'docs/faq-guard.md', 'docs/quality_pilot_20261010.json',
     'docs/faq_guard_verification_20261010.json',
+    'docs/quality_focus_20261011.json',
     'src/models/bge-m3/tokenizer.json', 'src/models/bge-m3/config.json',
     'src/models/bge-m3/sentencepiece.bpe.model', 'frontend/public/favicon.svg',
     'scripts/audit_repository.py',
