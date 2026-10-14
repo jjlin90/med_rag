@@ -245,17 +245,35 @@ true项的evidence_ids必须引用实际给出的【证据编号】，所指原�
         # 构建完整的提示
         use_review = (system_prompt is None and getattr(self.config, 'LLM_GROUNDING', True)
                       and getattr(self.config, 'LLM_GROUNDING_REVIEW', False))
-        if system_prompt is None:
+        custom_system_prompt = system_prompt is not None
+        if not custom_system_prompt:
             system_prompt = self._build_system_prompt()
 
         # 构建用户提示
-        user_prompt = self._build_user_prompt(query, context, history)
+        user_prompt = (self._build_custom_user_prompt(query, context, history)
+                       if custom_system_prompt else self._build_user_prompt(query, context, history))
 
         # 生成回答
         answer = self.generate(user_prompt, system_prompt)
         if answer and use_review:
             answer = self.review_grounded_answer(query, context, answer, history)
         return answer
+
+    @staticmethod
+    def _build_custom_user_prompt(query: str, context: str,
+                                  history: Optional[List[Dict]] = None) -> str:
+        """显式系统提示决定回答规则，避免给通用分支附加医学拒答约束。"""
+        parts = []
+        if context:
+            parts.append(f"【参考内容】\n{context}")
+        if history:
+            messages = []
+            for msg in history[-3:]:
+                role = "用户" if msg['role'] == 'user' else "助手"
+                messages.append(f"{role}: {msg['content']}")
+            parts.append("【对话历史】\n" + "\n".join(messages))
+        parts.append(f"【用户问题】\n{query}")
+        return "\n\n".join(parts)
 
     def review_grounded_answer(self, query: str, context: str, answer: str,
                                history: Optional[List[Dict]] = None) -> Optional[str]:
@@ -288,7 +306,7 @@ true项的evidence_ids必须引用实际给出的【证据编号】，所指原�
 """
             if history:
                 prompt += "\n【对话历史（仅用于理解指代，不是医学事实依据）】\n"
-                for msg in history[-3:]:  # 只使用最近3轮历史
+                for msg in history[-3:]:  # 只使用最近3条消息，不是3轮问答
                     role = "用户" if msg['role'] == 'user' else "助手"
                     prompt += f"{role}: {msg['content']}\n"
             prompt += "\n请直接输出答案正文。能回答时首句给结论，不要提及‘资料’‘上下文’或回答依据；只有完全无相关事实时，才用一句包含具体缺失主题的话拒答："

@@ -185,25 +185,41 @@ def build_general(target: int = 1500) -> list:
     return samples[:target]
 
 
+def split_samples(samples: list, seed: int = 42) -> tuple:
+    """先按文本去重并检查标签，再按类别平衡、分层切分，避免原样问题跨集合。"""
+    unique = {}
+    for sample in samples:
+        text = sample['text'].strip()
+        label = sample['label']
+        if not text or type(label) is not int or label not in (0, 1):
+            raise ValueError('Intent samples require nonempty text and a binary integer label')
+        if text in unique and unique[text]['label'] != label:
+            raise ValueError('Conflicting intent labels for the same question')
+        unique[text] = {'text': text, 'label': label}
+    groups = [[row for row in unique.values() if row['label'] == label] for label in (0, 1)]
+    count = min(map(len, groups))
+    if count < 2:
+        raise ValueError('At least two unique samples per intent are required')
+    rng = random.Random(seed)
+    train, val = [], []
+    for group in groups:
+        rng.shuffle(group)
+        group = group[:count]
+        split = min(max(int(count * .9), 1), count - 1)
+        train.extend(group[:split])
+        val.extend(group[split:])
+    rng.shuffle(train)
+    rng.shuffle(val)
+    return train, val
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     medical = build_medical(2500)
     general = build_general(2500)
 
-    # 平衡到较小者
-    n = min(len(medical), len(general))
-    random.shuffle(medical)
-    random.shuffle(general)
-    medical = medical[:n]
-    general = general[:n]
-
-    all_data = medical + general
-    random.shuffle(all_data)
-
-    split = int(len(all_data) * 0.9)
-    train = all_data[:split]
-    val = all_data[split:]
+    train, val = split_samples(medical + general)
 
     def dist(lst):
         c = {0: 0, 1: 0}
@@ -218,7 +234,7 @@ def main():
         json.dumps(val, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    print(f"医疗样本数: {len(medical)}  通用样本数: {len(general)}")
+    print(f"去重后实际样本数: {len(train) + len(val)}  -> 标签分布 {dist(train + val)}")
     print(f"训练集: {len(train)}  -> 标签分布 {dist(train)}")
     print(f"验证集: {len(val)}  -> 标签分布 {dist(val)}")
     print(f"已保存: {OUT_DIR/'train.json'}  {OUT_DIR/'val.json'}")

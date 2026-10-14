@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..config.settings import Config
 from .document_loader import Document
+from .markdown_normalizer import normalize_markdown, transform_markdown_prose
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,11 @@ class DataCleaner:
         cleaned_docs = []
 
         for doc in documents:
+            is_markdown = doc.metadata.get('file_type') == 'markdown'
+            # Fail visibly rather than indexing raw markup after a parse error.
+            content = normalize_markdown(doc.page_content) if is_markdown else doc.page_content
             try:
-                cleaned_content = self._clean_text(doc.page_content)
+                cleaned_content = self._clean_text(content, preserve_markdown=is_markdown)
                 cleaned_doc = Document(
                     cleaned_content,
                     doc.metadata
@@ -44,15 +48,20 @@ class DataCleaner:
             except Exception as e:
                 logger.error(f"Error cleaning document {doc.metadata.get('file_path', 'unknown')}: {str(e)}")
                 # 保留原始文档作为备选
+                if is_markdown:
+                    raise
                 cleaned_docs.append(doc)
 
         logger.info(f"Cleaned {len(documents)} documents, kept {len(cleaned_docs)}")
         return cleaned_docs
 
-    def _clean_text(self, text: str) -> str:
+    def _clean_text(self, text: str, preserve_markdown: bool = False) -> str:
         """清洗单个文本"""
         if not text:
             return ""
+
+        if preserve_markdown:
+            return transform_markdown_prose(text, self._clean_markdown_prose)
 
         # 1. 字符级清洗
         text = self._clean_characters(text)
@@ -68,6 +77,12 @@ class DataCleaner:
         text = self._normalize_whitespace(paragraphs)
 
         return text
+
+    def _clean_markdown_prose(self, text: str) -> str:
+        # Table separators and list indentation survive; code is protected by the caller.
+        text = self._clean_characters(text)
+        text = '\n'.join(line.rstrip() for line in text.split('\n'))
+        return re.sub(r'\n{3,}', '\n\n', text).strip()
 
     def _clean_characters(self, text: str) -> str:
         """字符级清洗"""

@@ -14,6 +14,22 @@ from scripts.eval_score_utils import (parse_judge_score, make_pair_row, summariz
 
 
 class EvaluationComparisonTests(unittest.TestCase):
+    def test_static_report_does_not_claim_independence_without_generation_provenance(self):
+        from scripts import evaluate_rag as module
+        for models, expected in [([None], None), (['other', None], None),
+                                 (['judge', None], True), (['other'], False)]:
+            with self.subTest(models=models), patch.object(module, 'BGEEmbeddingProvider'), \
+                 patch.object(module, 'RAGEvaluator') as evaluator, redirect_stdout(io.StringIO()):
+                evaluator.return_value.evaluate_dataset.return_value = {'engine':'ragas'}
+                rows = [{'question':'q','answer':'a','contexts':['evidence'],'_gen_model':m}
+                        for m in models]
+                result = module.run_static_eval(SimpleNamespace(LLM_MODEL_NAME='judge'), rows)
+                cfg = result['evaluation_config']
+                self.assertIs(cfg['self_judge'], expected)
+                self.assertEqual(cfg['generation_provenance_complete'], all(models))
+                if expected is None:
+                    self.assertIn('unverified', cfg['note'])
+
     def test_judge_rejects_invalid_values_and_keeps_genuine_zero(self):
         self.assertEqual(parse_judge_score('```json\n{"score": 0}\n```'), 0.0)
         for raw in ('{}', 'broken', '{"score": -0.2}', '{"score": 1.2}',

@@ -1,7 +1,8 @@
-"""核查源码仓库的本地文档链接、Git忽略规则及本地凭据值混入。
+"""核查源码工作区的本地文档链接、Git忽略规则及本地凭据值混入。
 
 在含Git索引的源码目录运行，无GPU、数据库或模型接口调用。
 默认只读；仅指定--output时写入报告。凭据检查不输出凭据值。
+检查已跟踪与未跟踪且未忽略的文件，不需要先暂存新文件。
 """
 import argparse
 import html
@@ -21,6 +22,7 @@ IGNORED_PATHS = (
     'frontend/node_modules/a', 'frontend/dist/a', 'frontend/dist-slides/a',
     'logs/a.log', 'cache/a.json', '.workbuddy/a', 'docs/pages.json',
     '__pycache__/a.pyc',
+    'output/pdf/a.pdf', 'tmp/a.md', '.venv-mineru/a',
 )
 ALLOWED_PATHS = (
     '.env.example', 'README.md', 'requirements.txt', 'pyproject.toml',
@@ -32,6 +34,11 @@ ALLOWED_PATHS = (
     'src/models/bge-m3/tokenizer.json', 'src/models/bge-m3/config.json',
     'src/models/bge-m3/sentencepiece.bpe.model', 'frontend/public/favicon.svg',
     'scripts/audit_repository.py',
+    'requirements-mineru.txt', 'docs/mineru.md', 'docs/mineru_index_20261013.md',
+    'docs/review_20261012.md', 'src/offline_pipeline/markdown_normalizer.py',
+    'tests/test_intent_data.py', 'tests/test_markdown_normalizer.py',
+    'tests/test_mineru_extraction.py', 'tests/test_repository_audit.py',
+    'docs/review_20261014.md',
 )
 LINK = re.compile(r'!?\[[^\]]*\]\((<[^>]+>|(?:[^\s()]|\([^()]*\))+)(?:\s+["\x27][^\n]*?["\x27])?\)')
 RESTRICTED_SUFFIXES = {
@@ -87,7 +94,9 @@ def audit(root=ROOT, scan_credentials=True):
     if not root.is_dir():
         raise AuditError('root_unavailable', '源码根目录不存在或不可访问；请检查--root。')
     tracked = git(root, 'ls-files', '-z').stdout.decode('utf-8').split('\0')[:-1]
-    docs = [name for name in tracked if name.lower().endswith('.md')
+    untracked = git(root, 'ls-files', '--others', '--exclude-standard', '-z').stdout.decode('utf-8').split('\0')[:-1]
+    worktree = sorted(set(tracked + untracked))
+    docs = [name for name in worktree if name.lower().endswith('.md')
             and (root/name).is_file()]
     broken, checked, cache = [], 0, {}
     for name in docs:
@@ -116,8 +125,8 @@ def audit(root=ROOT, scan_credentials=True):
             if (result.returncode == 0) != expect:
                 ignore_errors.append({'path': name, 'expected_ignored': expect})
     tracked_ignored = git(root, 'ls-files', '-ci', '--exclude-standard', '-z').stdout.decode('utf-8').split('\0')[:-1]
-    restricted = [name for name in tracked
-                  if re.search(r'(^|/)(artifacts|data|node_modules|\.venv|\.workbuddy|\.mimosa)/', name)
+    restricted = [name for name in worktree
+                  if re.search(r'(^|/)(artifacts|data|node_modules|\.venv(?:-mineru)?|\.workbuddy|\.mimosa|tmp)/|^output/pdf/', name)
                   or Path(name).suffix.lower() in RESTRICTED_SUFFIXES
                   or Path(name).name.startswith('.env') and Path(name).name != '.env.example']
 
@@ -137,17 +146,21 @@ def audit(root=ROOT, scan_credentials=True):
                 credentials[key] = value.encode('utf-8')
         credential_status = 'checked_local_literal_values'
     secret_matches = []
-    for name in tracked:
+    for name in worktree:
         if credentials and (root/name).is_file():
             content = (root/name).read_bytes()
             fields = [key for key, value in credentials.items() if value in content]
             if fields:
                 secret_matches.append({'path': name, 'credential_fields': fields})
-    return {'tracked_files': len(tracked), 'tracked_markdown_files': len(docs),
+    return {'scope': 'tracked_and_untracked_nonignored_worktree_files',
+            'tracked_files': len(tracked), 'untracked_files': len(untracked),
+            'worktree_files': len(worktree), 'markdown_files': len(docs),
+            'tracked_markdown_files': sum(name in tracked for name in docs),
             'local_links_checked': checked, 'broken_links_or_anchors': broken,
             'ignore_probes': len(IGNORED_PATHS)+len(ALLOWED_PATHS),
             'ignore_errors': ignore_errors, 'tracked_ignored': tracked_ignored,
-            'tracked_restricted_files': restricted,
+            'tracked_restricted_files': [name for name in restricted if name in tracked],
+            'untracked_restricted_files': [name for name in restricted if name in untracked],
             'credential_scan_status': credential_status,
             'credential_values_checked': len(credentials),
             'local_credential_matches': secret_matches}
@@ -192,7 +205,7 @@ def main():
             return 2
     return int(not result['credential_scan_requirement_met'] or any(result[key] for key in (
         'broken_links_or_anchors', 'ignore_errors', 'tracked_ignored',
-        'tracked_restricted_files', 'local_credential_matches')))
+        'tracked_restricted_files', 'untracked_restricted_files', 'local_credential_matches')))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,3 @@
+# Independent HTML extraction environment; do not install into the RAG .venv.
+mineru==4.0.12
+beautifulsoup4>=4.12,<5

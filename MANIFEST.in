@@ -1,4 +1,5 @@
 include README.md GETTING_STARTED.md requirements.txt uv.lock .env.example run_api_safe.ps1
+include requirements-mineru.txt
 recursive-include docs *.md *.html
 include docs/faq_guard_verification_20261010.json
 include docs/quality_pilot_20261010.json
@@ -14,6 +15,10 @@ recursive-include frontend/src *.js *.css
 recursive-include frontend/scripts *.js
 recursive-include frontend/public *.svg
 prune artifacts
+prune output/pdf
+prune tmp
+prune .venv
+prune .venv-mineru
 prune data
 prune src/models
 prune web_demo/.venv

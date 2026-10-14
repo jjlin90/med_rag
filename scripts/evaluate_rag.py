@@ -286,12 +286,19 @@ def run_static_eval(config: Config, items: List[Dict[str, Any]]) -> Dict[str, An
     gen_models = sorted({
         str(it.get("_gen_model")) for it in items if it.get("_gen_model")
     })
+    provenance_complete = bool(items) and all(it.get('_gen_model') for it in items)
+    self_judge = (True if config.LLM_MODEL_NAME in gen_models else
+                  False if provenance_complete else None)
     result["evaluation_config"] = {
         "judge_model": config.LLM_MODEL_NAME,
         "generation_models": gen_models,
-        "self_judge": config.LLM_MODEL_NAME in gen_models,
+        "generation_provenance_complete": provenance_complete,
+        "self_judge": self_judge,
         "note": ("same-model judge; absolute scores may contain self-preference bias"
-                 if config.LLM_MODEL_NAME in gen_models else "independent judge"),
+                 if self_judge is True else
+                 "generation model provenance incomplete; judge independence unverified"
+                 if self_judge is None else
+                 "different recorded model names; verify provider aliases before claiming independence"),
     }
     return result
 

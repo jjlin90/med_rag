@@ -1,6 +1,10 @@
 # med_rag 架构说明
 
+2026-10-14复核：完整工程回归111项运行、110项通过、1项SDK环境跳过；独立MinerU环境11项专项全部通过。新增审计覆盖未跟踪且未忽略的文件，并修复归一化和后续入库清洗对代码空行/行尾空格的改动。历史评测与当前工程验证分开说明，见[本次核查](review_20261014.md)。
+
 > 2026-10-10 更新 FAQ 问题一致性及缓存 v3；2026-10-08 对照源码、回归和本地数据核验。详细讲解见 [学习与面试全解](med_rag_学习与面试全解.md)，本轮验收见 [项目检查记录](review_20261008.md)。
+
+2026-10-12补充：通用分支的系统与用户提示均与医学grounding隔离；跨子查询同父合并保留标题标记和全部命中子ID，最高融合分决定代表子块；训练数据构建先去重再切分，静态评分来源不全时不再声明独立裁判。该阶段86项工程回归通过，详见[阶段核查](review_20261012.md)。
 
 ## GPU 运行环境
 
@@ -10,7 +14,9 @@ Windows/Linux 的 uv 安装从官方 cu126 索引锁定 PyTorch；pip 需单独�
 
 ## 离线建库
 
-HTML 抽取独立执行：`scripts/extract_msd.py` 默认从 `data/raw/MSDZHConsumerMedicalTopics` 读取，向 `data/clean_md` 输出 Markdown，支持覆盖输入与输出目录。
+HTML 抽取独立执行：`scripts/extract_msd.py` 默认从 `data/raw/MSDZHConsumerMedicalTopics` 读取，使用独立环境里的 MinerU 4.x Flash 原生解析，向 `data/clean_md_mineru` 输出 Markdown 与来源映射。BeautifulSoup 保留 MSD 专用 DOM 过滤；标题和数值保留检查失败会记入报告并返回非零退出码。支持覆盖输入与输出目录、抽样及多进程解析，详见 [MinerU 抽取说明](mineru.md)。原 `data/clean_md` 和已有入库统计单独保留。
+
+Markdown 经 `DataCleaner` 入库前调用 `markdown_normalizer.py`，将链接目标和 HTML 属性移除，链接文字与标题保留；HTML 表格展开跨行/跨列并转换成 Markdown 表格，科学计数上标保留为 `^`。Markdown 路径保留表格分隔行、列表缩进和段落边界，解析失败直接中止。清洗后的正文才进入原父子分块与双向量流程；PDF/TXT 等路径继续使用原有行清洗规则。重测与本地索引统计见 [清洗记录](mineru_index_20261013.md)。
 
 正式入库由 `scripts/run_offline_ingest.py` 或 CLI 数据处理模式执行：加载 → 清洗与元数据 → 父子分块 → 保存 JSON → BGE-M3 向量化 → Milvus 写入。加载器支持 PDF 文本、DOCX 段落、PPTX 文本、TXT、MD；扫描文档先转成可提取文本，旧 DOC/PPT 先转换。清洗保留 `120/80`、`1.5`、数字和单字符正文，页码按整行模式判断。
 

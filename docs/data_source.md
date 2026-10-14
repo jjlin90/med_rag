@@ -6,7 +6,7 @@
 
 原始目录 `data/raw/MSDZHConsumerMedicalTopics/` 和抽取脚本按《默沙东诊疗手册（大众版）》组织语料，项目用于医疗科普技术学习与演示。授权、抓取时间和逐篇原始页面映射由数据提供方材料确认。
 
-| 本轮本地核算 | 数量或字符数 |
+| 2026-10-08旧索引核算（data/clean_md与split_docs/docs.json） | 数量或字符数 |
 |---|---:|
 | 原始文件（排除 `.gitkeep`） | 6311 |
 | 清洗 Markdown | 2570 |
@@ -20,9 +20,11 @@
 
 ## 处理流程
 
-HTML 抽取使用 BeautifulSoup，输出 Markdown。正式入库加载 PDF 文本、DOCX 段落、PPTX 文本、TXT、MD；旧 DOC/PPT 先转换，扫描页面先外部 OCR。
+MSD HTML 抽取默认使用本地 MinerU 4.x，BeautifulSoup 负责页面 DOM 过滤，MinerU 保留正文标题、列表与表格并输出 Markdown。默认写入新目录 `data/clean_md_mineru/`，旧 `data/clean_md/` 和上述历史统计不会自动更新；安装与切换步骤见 [MinerU 抽取说明](mineru.md)。正式入库直接加载 PDF 文本、DOCX 段落、PPTX 文本、TXT、MD 的路径仍沿用原实现；旧 DOC/PPT 先转换，扫描页面先外部 OCR。
 
-`DataCleaner` 处理字符、整行页码、重复短行、纯符号行、连续重复行和空白，保留数值、比值和单字符正文。HTML 抽取与后续清洗承担不同职责，章节、复杂表格和重复行使用原文对照验收。
+`DataCleaner` 对 Markdown 先调用 `normalize_markdown`：删除链接目标、空锚点与 HTML 属性，保留链接文字、正文、标题、列表、图片替代文字和表格。HTML 表格转换为 Markdown 表格，展开跨行/跨列单元格以保留关联；上标/下标转为 `^`/`_`，避免 `10⁹` 被拼成 `109`。随后只清理控制字符、行尾空白和过量空行，保留表格分隔行、列表缩进及正文重复行。解析失败终止该批次，避免静默索引带标记的原文。
+
+PDF、DOCX、PPTX、TXT 仍使用原有页码、重复行、符号行与空白规则。抽取原文保留在 `data/clean_md_mineru/`，索引核对副本位于 `data/clean_md_mineru_index/`。最新语料、分块和固定 20 题对照见 [索引清洗记录](mineru_index_20261013.md)，与上表旧索引统计分别维护。
 
 父块上限 2000 字符，子块 400，重叠 60。分块失败终止，向量化失败或数量不一致抛出异常。加载旧 JSON 和入库均按 `parent_id` 恢复类型。当前磁盘数据已修正；在线 Milvus 集合单独核对。
 

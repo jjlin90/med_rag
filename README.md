@@ -1,5 +1,7 @@
 # 医疗知识问答系统 (Medical RAG System)
 
+2026-10-14当前工程验证：111项运行、110项通过、1项SDK环境跳过；独立MinerU环境11项通过。工作区审计已覆盖未跟踪新文件，代码片段空行与行尾空格保留已修复；新语料入库示例显式选择MinerU目录。[本次核查](docs/review_20261014.md)记录范围与验收。
+
 基于 RAG（检索增强生成）的医疗科普知识问答系统，支持**离线知识入库**与**在线智能问答**两条链路。
 语料按本地《默沙东诊疗手册（大众版）》目录组织，项目定位为医疗科普技术学习与演示。来源与数据使用说明见 [数据文档](docs/data_source.md)。
 
@@ -23,6 +25,11 @@
 | 当前调用链路与组件职责 | [架构说明](docs/architecture.md) |
 | 数据来源、格式支持与存量数据边界 | [数据来源与处理边界](docs/data_source.md) |
 | 系统原理与面试复习 | [学习与面试全解](docs/med_rag_学习与面试全解.md) |
+| 完整口述话术与77个问答主题 | [面试全解](docs/med_rag_面试全解.md) |
+| 最新截图问题修复与工作区核查 | [2026-10-14核查记录](docs/review_20261014.md) |
+| MinerU安装与HTML抽取 | [MinerU说明](docs/mineru.md) |
+| 新旧索引与20题历史开发对照 | [2026-10-13索引记录](docs/mineru_index_20261013.md) |
+| 提示隔离、训练分割与话术修订 | [2026-10-12核查记录](docs/review_20261012.md) |
 | 已修复问题、实现原因与验收依据 | [工程修订与面试详解](docs/20260927_工程修订与面试详解.md) |
 | 评测答案错配、评分分母与简历核查 | [2026-10-11 项目与评测修订](docs/review_20261011.md) |
 | 评估方法与业务案例分析 | [Ragas评估方法与业务案例分析](docs/Ragas评估与badcase分析.md) |
@@ -30,7 +37,7 @@
 | 评估参考目标、固定20题对照与复现 | [评估目标与对照方法](docs/quality_pilot_20261010.md) |
 | 父子块过滤、降级与迁移边界 | [Small-to-Big 缺陷修复报告](docs/diagrams/Small-to-Big缺陷修复报告.md)（区分当前实现与历史运行记录） |
 
-旧版 [面试全解](docs/med_rag_面试全解.md) 和 [学习指南](docs/rag_learning_guide.md) 保留为合并文档的导航入口，不再分别维护完整正文。本地演示和审查资料存于已忽略的 `artifacts/`，不随源码或 wheel 发布；仓库清理范围见 [仓库卫生与历史清理](docs/repository-hygiene.md)。
+[学习与面试全解](docs/med_rag_学习与面试全解.md)解释实现，[面试全解](docs/med_rag_面试全解.md)提供事实基线、77个口述问答主题和连续追问；[学习指南](docs/rag_learning_guide.md)保留导航。本地演示和审查资料存于已忽略的 `artifacts/`，不随源码或 wheel 发布；仓库清理范围见 [仓库卫生与历史清理](docs/repository-hygiene.md)。
 
 ## 项目结构
 
@@ -43,6 +50,7 @@ med_rag/
 ├── MANIFEST.in               # 源码包（sdist）的文件包含与排除规则
 ├── pyproject.toml            # 依赖声明（uv 管理）
 ├── requirements.txt          # pip直接依赖清单，与pyproject同步
+├── requirements-mineru.txt   # 独立MinerU抽取环境依赖，不混装到RAG环境
 ├── uv.lock                   # uv 锁定文件
 ├── src/
 │   ├── config/
@@ -50,6 +58,7 @@ med_rag/
 │   ├── offline_pipeline/     # 离线入库流水线
 │   │   ├── document_loader.py    # 多格式加载；OCR 接口当前为占位
 │   │   ├── data_cleaner.py       # 文本清洗、元数据抽取
+│   │   ├── markdown_normalizer.py # 索引前去链接目标/HTML，保留标题、列表、表格
 │   │   ├── chunk_splitter.py     # 父子分层分块
 │   │   ├── embedding_provider.py # BGE-M3 稠密+稀疏向量
 │   │   └── milvus_store.py       # Milvus 建集合/索引/混合检索/入库（schema 顶层 chunk_type，自适应过滤）
@@ -76,7 +85,7 @@ med_rag/
 │   ├── evaluate_rag.py       # Ragas 评估（--static 静态 / 实时管线）
 │   ├── ingest_faq.py         # 导入 FAQ 到 MySQL
 │   ├── clean_faq.py          # 清洗 FAQ 数据
-│   ├── extract_msd.py        # MSD 原始数据抽取
+│   ├── extract_msd.py        # MSD HTML → MinerU 原生解析 → Markdown（独立环境）
 │   ├── check_chunk_type_filter.py # Milvus 体检：chunk_type 过滤下推验证（--with-search 端到端）
 │   ├── verify_faq_guard.py   # 真实FAQ语料探针与公开摘要生成
 │   ├── verify_faq_services.py # 临时MySQL与隔离Redis键的真实FAQ联调
@@ -91,12 +100,19 @@ med_rag/
 │   ├── test_regressions.py   # 数据处理、问答与评测边界回归
 │   ├── test_faq_guard.py     # FAQ问题一致性、缓存证据与v3隔离回归
 │   ├── test_quality_pilot.py # 标题范围、事实复核、输出发布门控与配对完整性回归
+│   ├── test_eval_comparisons.py # 答案配对、评分缺失与裁判来源
+│   ├── test_intent_data.py   # 训练去重、标签冲突及分割泄漏
+│   ├── test_markdown_normalizer.py # Markdown结构和代码原文保留
+│   ├── test_mineru_extraction.py # 抽取行为与独立SDK验证
+│   ├── test_repository_audit.py # 未跟踪文件审计及私有目录排除
 │   └── test_streamlit_ui.py  # Streamlit 交互与展示回归
 ├── main.py                   # 命令行交互入口（直接输入问题→RAG 生成，不含学科选择）
 ├── run_api_safe.ps1          # Windows API 启动器，收窄 PATH 并启用故障追踪
 ├── data/                     # 数据（git 已屏蔽）
 │   ├── raw/                  # 原始 MSD 资源
 │   ├── clean_md/             # 清洗后 Markdown（约 2570 篇）
+│   ├── clean_md_mineru/      # MinerU 抽取结果与来源映射（独立目录）
+│   ├── clean_md_mineru_index/ # 归一化索引文本的本地核对副本
 │   ├── split_docs/docs.json  # 20816 条记录（按 parent_id：16880 子块 + 3936 父块）
 │   └── test_query/           # 测试集 / 评估数据
 ├── web_demo/                 # Streamlit 问答与评测界面
@@ -172,7 +188,9 @@ cp .env.example .env
 
 - 在线模型放入 `src/models/`：`bge-m3`、`bert_query_classifier`、`bge-reranker-large`。训练分类器还需要 `bert-base-chinese`；仅离线向量化需要 `bge-m3`。
 - 原始 MSD 数据放入 `data/raw/MSDZHConsumerMedicalTopics/`，
-  运行 `python scripts/extract_msd.py`，默认输出到 `data/clean_md/`；可用 `--input-dir`、`--output-dir` 覆盖路径。
+  使用独立 MinerU 环境运行 `scripts/extract_msd.py`，默认输出到 `data/clean_md_mineru/`；安装、抽样与旧流程对照见 [MinerU 抽取说明](docs/mineru.md)。可用 `--input-dir`、`--output-dir` 覆盖路径。
+
+  Markdown 入库时自动去除链接目标、HTML 锚点和属性，保留正文、标题、列表与表格；原始抽取文件保留用于追溯。清洗与固定 20 题重测见 [索引清洗记录](docs/mineru_index_20261013.md)。
 
 ### 5. 启动中间件
 
@@ -183,9 +201,10 @@ cp .env.example .env
 ### 6. 运行
 
 ```bash
-# 离线入库（耗时取决于设备、数据与依赖状态）
-python scripts/run_offline_ingest.py
-# 也可指定目录：python scripts/run_offline_ingest.py --data-dir ./data/clean_md
+# 按上一步的新MinerU抽取目录入库；耗时取决于设备、数据与依赖
+python scripts/run_offline_ingest.py --data-dir ./data/clean_md_mineru
+# 复现旧语料时显式选择：python scripts/run_offline_ingest.py --data-dir ./data/clean_md
+# 脚本不带--data-dir时仍默认读旧data/clean_md，避免静默迁移既有集合
 
 # 启动在线问答 API（默认端口 8005）
 python scripts/run_api.py
@@ -314,6 +333,8 @@ python scripts/audit_repository.py
 验收记录覆盖回归、静态检查、本地数据、安装包和页面渲染；历史210题评分与本轮固定20题开发对照在本地分别留档，公开文档采用参考目标和评估方法。
 
 
-2026-10-10 FAQ 修复阶段：165 条改写探针的相反类别误接受由 82 降为 0；2,416 条原问题仍有 2,345 条直答；该阶段58项工程回归通过，后续新增质量与评测回归后当前为81项。两层缓存升级 v3，隔离旧模糊匹配结果。验证范围与复现方法见 [FAQ 修复记录](docs/faq-guard.md)。
+2026-10-10 FAQ修复阶段58项工程回归通过，2026-10-11为81项；2026-10-12阶段86项通过。本次复跑165条条件替换探针，相反类别误接受82→0，非标准问题直答0，2416条标准问题仍有2345条直答。两层缓存v3隔离旧接受策略；本地探针使用CSV游标替代数据库，不代表下游医学回答正确。验证范围见[FAQ修复记录](docs/faq-guard.md)与[2026-10-12核查](docs/review_20261012.md)。
 
-2026-10-10质量试验新增标题补召回、医学事实复核及中文AR提示适配，当前工程回归共81项通过。使用固定20题、同一生成模型和独立裁判保存逐题证据及对照；实测记录在本地留档。配置、参考目标及复现方法见[评估目标与对照方法](docs/quality_pilot_20261010.md)。
+2026-10-13 MinerU 索引清洗后完整回归运行 107 项，106 项通过、1 项 SDK 环境跳过；独立 MinerU 环境 11 项通过。新方案本地重建 2,572 篇文档、4,064 父块、17,629 子块。旧索引与线上集合单独保留，固定 20 题实测及边界见 [清洗记录](docs/mineru_index_20261013.md)。
+
+2026-10-10质量试验新增标题补召回、医学事实复核及中文AR提示适配，使用固定20题、同一生成模型和独立裁判保存逐题证据与对照；实测记录在本地留档。配置、参考目标及复现方法见[评估目标与对照方法](docs/quality_pilot_20261010.md)。2026-10-12修复通用用户提示仍套医学拒答、子查询合并丢标题与子证据、训练分割原样泄漏、生成来源缺失却声明裁判独立的问题；旧模型没有重新训练。

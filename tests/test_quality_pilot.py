@@ -119,6 +119,56 @@ class QualityPilotTests(unittest.TestCase):
         generator.generate = Mock(return_value='general answer')
         self.assertEqual(generator.generate_with_context('q','',system_prompt='general'),'general answer')
         self.assertEqual(generator.generate.call_count,1)
+        prompt, system_prompt = generator.generate.call_args.args
+        self.assertEqual(system_prompt, 'general')
+        self.assertIn('q', prompt)
+        self.assertNotIn('请仅基于', prompt)
+        self.assertNotIn('【相关知识】', prompt)
+
+    def test_general_core_keeps_history_without_empty_medical_grounding(self):
+        generator = LLMGenerator.__new__(LLMGenerator)
+        generator.config = SimpleNamespace(LLM_GROUNDING=True, LLM_GROUNDING_REVIEW=True)
+        generator.generate = Mock(return_value='一般知识回答')
+        core = RAGSystem.__new__(RAGSystem)
+        core.intent_classifier = Mock(predict=Mock(return_value={'intent':'general','confidence':.9}))
+        core.llm_generator = generator
+        core.retrieval = Mock()
+        history = [{'role':'user','content':'旧问题'}, {'role':'assistant','content':'旧答案'}]
+        result = core.generate('这个概念是什么意思？', history=history)
+        self.assertEqual(result['answer'], '一般知识回答')
+        self.assertEqual(result['degrade_level'], 0)
+        core.retrieval.search_child_to_parent.assert_not_called()
+        prompt, system_prompt = generator.generate.call_args.args
+        self.assertIn('通用知识助手', system_prompt)
+        self.assertIn('旧问题', prompt)
+        self.assertIn('旧答案', prompt)
+        self.assertIn('这个概念是什么意思？', prompt)
+        self.assertNotIn('不要使用任何额外知识', prompt)
+        self.assertNotIn('完全无相关事实', prompt)
+        generator.generate.assert_called_once()
+
+    def test_subquery_merge_keeps_named_topic_and_all_child_evidence(self):
+        from src.online_service.retrieval import RetrievalResult
+        anchored = {'id':'named', 'source':'疾病甲', 'content':'named evidence',
+                    'score':.2, 'topic_anchor':True, 'children_ids':['c1'],
+                    'rerank_content':'first child'}
+        stronger = {'id':'named', 'source':'疾病甲', 'content':'named evidence',
+                    'score':.8, 'topic_anchor':False, 'children_ids':['c2','c1'],
+                    'rerank_content':'stronger child'}
+        unrelated = {'id':'other', 'content':'other evidence', 'score':.9}
+        for inputs in [[anchored, stronger], [stronger, anchored]]:
+            with self.subTest(first_score=inputs[0]['score']):
+                merged = RAGSystem._merge_retrieval_results([
+                    RetrievalResult(documents=[inputs[0], unrelated]),
+                    RetrievalResult(documents=[inputs[1]])])
+                reranker = Reranker.__new__(Reranker)
+                reranker.model = SimpleNamespace(compute_score=lambda pairs:[10.,1.])
+                result = reranker.rerank('疾病甲', merged.documents, top_k=1)
+                self.assertEqual(result[0]['id'], 'named')
+                self.assertEqual(result[0]['rerank_content'], 'stronger child')
+                self.assertEqual(set(result[0]['children_ids']), {'c1','c2'})
+        self.assertEqual(anchored['children_ids'], ['c1'])
+        self.assertFalse(stronger['topic_anchor'])
 
     def test_chinese_prompt_keeps_formula_and_default_prompt(self):
         from ragas.metrics._answer_relevance import ResponseRelevanceOutput

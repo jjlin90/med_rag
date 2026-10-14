@@ -94,12 +94,9 @@ class BGEEmbeddingProvider:
             # 使用BGE-M3同时生成稠密和稀疏向量
             # return_dense/return_sparse 控制输出哪些向量；colbert 向量本项目不用
             results = self.dense_model.encode(texts,
-                                              # GPU 前向批大小。注意：128 在持续跑时会因
-                                              # 文本长短不一造成显存碎片、顶到 8G 上限而空转，
-                                              # 故用 64 保留足够显存余量
+                                              # 当前工程批大小；显存是否足够需按文本长度及并发实测。
                                               batch_size=64,
-                                              # 块文本最长约 1333 token，2048 留足余量；
-                                              # 之前设 8192 会浪费大量显存/内存，GPU 上易 OOM
+                                              # tokenizer 的截断上限；字符上限不能直接证明不会截断。
                                               max_length=2048,
                                               return_dense=True,
                                               return_sparse=True,

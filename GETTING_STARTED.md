@@ -54,14 +54,17 @@ cp .env.example .env
 
 - 模型放 `src/models/`：`bge-m3`、`bert_query_classifier`、`bge-reranker-large`。训练分类器另需 `bert-base-chinese`；离线向量化只需要 `bge-m3`。
 - 原始 MSD 数据放 `data/raw/MSDZHConsumerMedicalTopics/`，
-  运行 `python scripts/extract_msd.py` 生成 `data/clean_md/`。
+  使用独立 MinerU 环境运行 `scripts/extract_msd.py`，默认生成 `data/clean_md_mineru/`。安装与抽样命令见 [MinerU 抽取说明](docs/mineru.md)；原 RAG 环境保留不变。
+
+  入库的 Markdown 会先清理链接目标与 HTML 标记，并保留标题、列表、表格和上标数值。`data/clean_md_mineru/` 保存抽取原文；本次归一化核对副本为 `data/clean_md_mineru_index/`。实际清洗与评测范围见 [清洗记录](docs/mineru_index_20261013.md)。
 
 ### 5. 运行
 
 ```bash
-# 离线入库（一次性；耗时需按当前设备实测）
-python scripts/run_offline_ingest.py
-# 也可指定目录：python scripts/run_offline_ingest.py --data-dir ./data/clean_md
+# 对应上一步的新MinerU抽取结果；耗时需按当前设备实测
+python scripts/run_offline_ingest.py --data-dir ./data/clean_md_mineru
+# 旧语料对照：python scripts/run_offline_ingest.py --data-dir ./data/clean_md
+# 不传--data-dir仍读旧目录，不自动迁移线上集合
 
 # 启动在线 API（默认端口 8005，各入口共用启动参数）
 python scripts/run_api.py

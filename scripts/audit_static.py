@@ -110,7 +110,9 @@ def audit():
                     deps.append(f'{dist.metadata["Name"]}: requires {req}, installed {installed}')
     torch_build = audit_torch_installation()
     return {'python_files': len(files), 'syntax_errors': errors,
+            'python_scope': 'main.py plus src/scripts/web_demo/tests, excluding model and runtime directories; includes untracked files',
             'markdown_files': len(docs), 'broken_local_links': broken,
+            'markdown_scope': 'root and frontend/web_demo READMEs, GETTING_STARTED and docs/**/*.md; includes untracked files, excludes model READMEs',
             'dependency_errors': sorted(set(deps)), 'torch_build': torch_build,
             'installation_errors': torch_build['errors']}
 

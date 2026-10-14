@@ -298,8 +298,20 @@ class RAGSystem:
                 rid = doc.get('id')
                 if rid is None:
                     continue
-                if rid not in best_by_id or doc.get('score', 0) > best_by_id[rid].get('score', 0):
-                    best_by_id[rid] = doc
+                existing = best_by_id.get(rid)
+                if existing is None:
+                    best_by_id[rid] = dict(doc)
+                    if 'children_ids' in doc:
+                        best_by_id[rid]['children_ids'] = list(doc['children_ids'])
+                    continue
+                # 各路证据共同确定标题范围；最高分决定代表子块，不能覆盖其他路的来源记录。
+                selected = doc if doc.get('score', 0) > existing.get('score', 0) else existing
+                merged = dict(selected)
+                merged['topic_anchor'] = bool(existing.get('topic_anchor') or doc.get('topic_anchor'))
+                if 'children_ids' in existing or 'children_ids' in doc:
+                    merged['children_ids'] = list(dict.fromkeys(
+                        existing.get('children_ids', []) + doc.get('children_ids', [])))
+                best_by_id[rid] = merged
 
         documents = sorted(best_by_id.values(), key=lambda x: x.get('score', 0), reverse=True)
 

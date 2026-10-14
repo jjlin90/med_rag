@@ -16,7 +16,7 @@
 
 该阶段核查175个已跟踪文件和34项忽略/保留路径：没有被忽略规则覆盖的已跟踪文件，没有数据、权重、私有产物或本地环境凭据值混入。模型目录保留的`tokenizer.json`等文件属于分词器资产，权重本体另行配置；Git忽略与MANIFEST.in分发规则分别核查，源码包不包含本地数据、模型目录或artifacts目录。下方公共入口加入后，新增脚本也纳入索引，检查结果以每次报告为准。
 
-文档中的历史测试数量和历史清理结果保留明确日期；截至2026-10-11，当前工程回归为81项，复核见[检查记录](review_20261011.md)。当前文件核查不替代Git历史、远端引用或平台缓存的检查。
+文档中的历史测试数量和历史清理结果保留明确日期；截至2026-10-11，该阶段工程回归为81项，复核见[检查记录](review_20261011.md)。当前文件核查不替代Git历史、远端引用或平台缓存的检查。
 
 ### 从源码工作区复现当前检查
 
@@ -30,9 +30,9 @@ python scripts/audit_repository.py --output artifacts/repository_audit.json
 python scripts/audit_repository.py --require-local-credentials
 ```
 
-脚本核查所有已跟踪Markdown的本地文件与锚点、忽略/保留路径、被忽略规则覆盖的已跟踪文件及本地产物混入。每次实际路径探针数见报告的 `ignore_probes`，本地链接及锚点数见 `local_links_checked`；新增路径或文档链接后须重新检查，历史计数不代表后续版本。核心检查只需要Python标准库和Git，无GPU、Docker、数据库或模型接口调用；Git索引提供检查范围，因此仅解压源码包时需用`--root`指向对应Git源码工作区。退出码0表示已执行检查通过，1表示发现问题，2表示检查无法完成。默认不修改文件，只有指定`--output`才写报告。
+脚本核查已跟踪与未跟踪且未忽略的工作区文件：Markdown本地链接与锚点、本地凭据值及禁入产物。另检查忽略/保留规则及被忽略规则覆盖的已跟踪文件，不需要先暂存新文件。报告分别记录tracked_files、untracked_files、worktree_files及总Markdown数；静态检查只扫描项目文档，仓库检查还包含模型README，范围字段明确说明两者区别。output/pdf、tmp及独立MinerU环境增加忽略探针，新增源码/文档/测试增加保留探针。每次实际路径探针数见报告的 `ignore_probes`，本地链接及锚点数见 `local_links_checked`；新增路径或文档链接后须重新检查，历史计数不代表后续版本。核心检查只需要Python标准库和Git，无GPU、Docker、数据库或模型接口调用；Git提供已跟踪及未忽略新文件清单，因此仅解压源码包时需用`--root`指向对应Git源码工作区。退出码0表示已执行检查通过，1表示发现问题，2表示检查无法完成。默认不修改文件，只有指定`--output`才写报告。
 
-若根目录存在`.env`，使用项目依赖python-dotenv解析，其中名称包含API_KEY/PASSWORD/TOKEN/SECRET、长度至少8的非占位字面值在已跟踪文件中逐字节比对；不展开变量引用，报告只给出命中文件与配置字段名，不输出凭据值。这是本地环境凭据值核查，范围不包含其他来源的未知密钥或历史提交。克隆后没有本地`.env`时明确标为`skipped_no_local_env`；如主动使用`--skip-local-credentials`则标为`skipped_by_option`，均不作为凭据扫描通过的证据。
+若根目录存在`.env`，使用项目依赖python-dotenv解析，其中名称包含API_KEY/PASSWORD/TOKEN/SECRET、长度至少8的非占位字面值在已跟踪及未跟踪且未忽略的工作区文件中逐字节比对；不展开变量引用，报告只给出命中文件与配置字段名，不输出凭据值。这是本地环境凭据值核查，范围不包含其他来源的未知密钥或历史提交。克隆后没有本地`.env`时明确标为`skipped_no_local_env`；如主动使用`--skip-local-credentials`则标为`skipped_by_option`，均不作为凭据扫描通过的证据。
 
 `--require-local-credentials`与跳过选项互斥：只有扫描状态为`checked_local_literal_values`且实际比对至少1个有效凭据值时，`credential_scan_requirement_met`才为true；没有本地.env或没有符合条件的值时返回1。默认模式仍允许无.env的克隆检查通过，并明确记录跳过状态。CI通过受保护的本地环境文件提供待核查值，文件按现有规则忽略。
 
