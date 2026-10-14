@@ -8,11 +8,24 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from scripts import audit_repository
+from scripts import audit_repository, audit_static
 from scripts.audit_repository import audit
 
 
 class RepositoryAuditTests(unittest.TestCase):
+    def run_static_audit(self, root):
+        (root/'main.py').write_text('pass\n',encoding='utf-8')
+        (root/'GETTING_STARTED.md').write_text('# Getting started\n',encoding='utf-8')
+        for name in ('web_demo','frontend'):
+            directory = root/name
+            directory.mkdir(exist_ok=True)
+            (directory/'README.md').write_text('# Entry\n',encoding='utf-8')
+        (root/'docs').mkdir(exist_ok=True)
+        with patch.object(audit_static,'ROOT',root), \
+                patch.object(audit_static.metadata,'distributions',return_value=[]), \
+                patch.object(audit_static,'audit_torch_installation',return_value={'errors':[]}):
+            return audit_static.audit()
+
     def run_link_gate(self, root):
         output = io.StringIO()
         args = ['audit_repository.py','--root',str(root),
@@ -92,6 +105,66 @@ class RepositoryAuditTests(unittest.TestCase):
             self.assertEqual(report['broken_links_or_anchors'],[])
             self.assertEqual(report['tracked_file_links_checked'],0)
             self.assertEqual(report['untracked_link_targets'],[])
+
+    def test_static_and_repository_check_absolute_paths_and_file_uris_consistently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            missing = root/'missing.md'
+            existing = root/'extra.md'
+            existing.write_text('# Extra\n',encoding='utf-8')
+            targets = (missing.as_posix(),missing.as_uri(),existing.as_uri()+'#absent')
+            (root/'README.md').write_text('\n'.join('[target](<'+target+'>)' for target in targets),encoding='utf-8')
+            static = self.run_static_audit(root)
+            repo = audit(root,scan_credentials=False)
+            self.assertTrue(any(item['target'] == missing.as_posix() for item in static['broken_local_links']))
+            self.assertEqual(static['broken_local_links'],[
+                {'path':item['file'],'target':item['target'],'reason':item['reason']}
+                for item in repo['broken_links_or_anchors']])
+            self.assertEqual(static['local_links_checked'],repo['local_links_checked'])
+            self.assertEqual(static['nonportable_link_targets'],repo['nonportable_link_targets'])
+
+    def test_raw_and_encoded_backslash_paths_fail_delivery_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            path = root/'notes'/'sub'/'x.md'
+            path.parent.mkdir(parents=True)
+            path.write_text('# Note\n',encoding='utf-8')
+            subprocess.run(['git','add','notes/sub/x.md'],cwd=root,check=True,capture_output=True)
+            targets = ('notes\\sub\\x.md','notes%5Csub%5Cx.md')
+            (root/'README.md').write_text('\n'.join('[note]('+target+')' for target in targets),encoding='utf-8')
+            code, repo = self.run_link_gate(root)
+            self.assertEqual(repo['nonportable_link_targets'],[
+                {'file':'README.md','target':target,'reason':'backslash in local path'} for target in targets])
+            self.assertEqual(code,1)
+            static = self.run_static_audit(root)
+            self.assertEqual(static['nonportable_link_targets'],repo['nonportable_link_targets'])
+            with patch.object(audit_static,'audit',return_value=static), \
+                    patch('sys.argv',['audit_static.py']), redirect_stdout(io.StringIO()):
+                self.assertEqual(audit_static.main(),1)
+            (root/'README.md').write_text('[note](notes/sub/x.md#note)\n',encoding='utf-8')
+            code, repo = self.run_link_gate(root)
+            self.assertEqual(code,0)
+            self.assertEqual(repo['nonportable_link_targets'],[])
+
+    def test_static_and_repository_check_anchors_and_skip_code_examples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            (root/'README.md').write_text(
+                '# Existing\n[ok](#existing)\n[bad](#missing)\n'
+                '`[literal](inline-missing.md)`\n'
+                '~~~markdown\n[example](fenced-missing.md)\n~~~\n'
+                '[external](https://example.invalid/)\n',encoding='utf-8')
+            static = self.run_static_audit(root)
+            repo = audit(root,scan_credentials=False)
+            self.assertEqual(static['broken_local_links'],[
+                {'path':'README.md','target':'#missing','reason':'missing anchor'}])
+            self.assertEqual(repo['broken_links_or_anchors'],[
+                {'file':'README.md','target':'#missing','reason':'missing anchor'}])
+            self.assertEqual(static['local_links_checked'],repo['local_links_checked'])
+            self.assertEqual(static['external_links_skipped'],1)
 
     def test_absolute_tracked_file_is_checked_but_not_portable(self):
         with tempfile.TemporaryDirectory() as directory:

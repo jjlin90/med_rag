@@ -42,6 +42,10 @@ python scripts/audit_repository.py --require-local-credentials
 
 HTTP/HTTPS、mailto、data等其他协议及 `//host/...` 网络链接不访问，数量写入 `external_links_skipped`，本地审计通过不代表这些外部目标可用。远程主机的file URI、网络文件系统路径及不支持的file URI格式直接记录为检查问题并返回1，不静默跳过，也不尝试访问远程共享。Windows盘符路径在非Windows环境无法核验时同样报告问题。目录链接仍不做Git文件索引归属检查，但绝对目录链接会进入不可移植清单。
 
+第四阶段修订：反斜杠相对路径（包括百分号编码的反斜杠）也进入 `nonportable_link_targets`，原因标为 `backslash in local path`；Windows上目标存在也不能据此证明GitHub/POSIX路径可用，仓库文档统一用正斜杠相对路径。
+
+[静态审计](../scripts/audit_static.py)与仓库审计现在共用 `audit_document_links`，统一识别本地路径、file URI、编码、锚点、行内/围栏代码示例及不可移植路径。静态审计报告本地链接数、外部跳过数及不可移植清单，缺文件、缺锚点或不可移植目标均返回1。静态审计不读取Git索引；仓库审计的 `--require-tracked-links` 继续额外核对已跟踪文档的文件目标是否纳入Git。两者文档范围分别为项目文档与含模型README的工作区文档，链接总数可能不同，要按范围解读。
+
 默认模式保留新文档的工作区检查行为，但仍输出未跟踪及不可移植目标清单。发布前使用 `--require-tracked-links`：任一清单非空时，`tracked_link_requirement_met`为false，返回1。未跟踪草稿链接到另一份未跟踪草稿仍检查存在性与锚点，纳入Git后才要求其文件目标也在索引中。默认模式返回0不能单独证明链接目标可随Git交付；发布门控与包内容检查须分别完成。
 
 `--require-local-credentials`与跳过选项互斥：只有扫描状态为`checked_local_literal_values`且实际比对至少1个有效凭据值时，`credential_scan_requirement_met`才为true；没有本地.env或没有符合条件的值时返回1。默认模式仍允许无.env的克隆检查通过，并明确记录跳过状态。CI通过受保护的本地环境文件提供待核查值，文件按现有规则忽略。

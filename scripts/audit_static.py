@@ -3,9 +3,12 @@ import ast
 import importlib.metadata as metadata
 import json
 from pathlib import Path
-import re
 import sys
-from urllib.parse import unquote
+
+if __package__:
+    from .audit_repository import audit_document_links
+else:
+    from audit_repository import audit_document_links
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,18 +80,12 @@ def audit():
             compile(path.read_text(encoding='utf-8-sig'), str(path), 'exec')
         except (SyntaxError, UnicodeError) as exc:
             errors.append({'path': str(path.relative_to(ROOT)), 'error': str(exc)})
-    broken = []
     docs = [ROOT / 'README.md', ROOT / 'GETTING_STARTED.md',
             ROOT / 'web_demo/README.md', ROOT / 'frontend/README.md',
             *(ROOT / 'docs').rglob('*.md')]
-    for path in docs:
-        source = re.sub(r'```.*?```', '', path.read_text(encoding='utf-8'), flags=re.S)
-        for target in re.findall(r'!?\[[^\]]*\]\(([^)]+)\)', source):
-            target = unquote(target.split('#')[0].strip('<>'))
-            if not target or re.match(r'\w+:', target) or target.startswith('//'):
-                continue
-            if not (path.parent / target).exists():
-                broken.append({'path': str(path.relative_to(ROOT)), 'target': target})
+    links = audit_document_links(ROOT, [path.relative_to(ROOT).as_posix() for path in docs])
+    broken = [{'path': item['file'], 'target': item['target'], 'reason': item['reason']}
+              for item in links['broken_links_or_anchors']]
     deps = []
     try:
         from packaging.requirements import Requirement
@@ -112,17 +109,26 @@ def audit():
     return {'python_files': len(files), 'syntax_errors': errors,
             'python_scope': 'main.py plus src/scripts/web_demo/tests, excluding model and runtime directories; includes untracked files',
             'markdown_files': len(docs), 'broken_local_links': broken,
+            'local_links_checked': links['local_links_checked'],
+            'external_links_skipped': links['external_links_skipped'],
+            'nonportable_link_targets': links['nonportable_link_targets'],
             'markdown_scope': 'root and frontend/web_demo READMEs, GETTING_STARTED and docs/**/*.md; includes untracked files, excludes model READMEs',
+            'link_check_scope': 'shared local path, file URI, anchor and portability checks; Git index membership is checked separately by audit_repository',
             'dependency_errors': sorted(set(deps)), 'torch_build': torch_build,
             'installation_errors': torch_build['errors']}
 
 
-if __name__ == '__main__':
+def main():
     result = audit()
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if '--output' in sys.argv:
         path = Path(sys.argv[sys.argv.index('--output') + 1])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-    sys.exit(bool(result['syntax_errors'] or result['broken_local_links']
-                  or result['dependency_errors'] or result['installation_errors']))
+    return int(bool(result['syntax_errors'] or result['broken_local_links']
+                    or result['nonportable_link_targets']
+                    or result['dependency_errors'] or result['installation_errors']))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

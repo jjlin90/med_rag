@@ -122,20 +122,15 @@ def local_link_target(document, target):
     return path, fragment, absolute
 
 
-def audit(root=ROOT, scan_credentials=True):
+def audit_document_links(root, docs, tracked=None):
+    """两审计共用的本地链接检查；tracked=None时不核对Git索引归属。"""
     root = Path(root).resolve()
-    if not root.is_dir():
-        raise AuditError('root_unavailable', '源码根目录不存在或不可访问；请检查--root。')
-    tracked = git(root, 'ls-files', '-z').stdout.decode('utf-8').split('\0')[:-1]
-    tracked_names = {Path(name) for name in tracked}
-    untracked = git(root, 'ls-files', '--others', '--exclude-standard', '-z').stdout.decode('utf-8').split('\0')[:-1]
-    worktree = sorted(set(tracked + untracked))
-    docs = [name for name in worktree if name.lower().endswith('.md')
-            and (root/name).is_file()]
+    tracked_names = {Path(name) for name in tracked} if tracked is not None else None
     broken, checked, cache = [], 0, {}
     nonportable_targets, external_skipped = [], 0
     untracked_targets, tracked_file_links = [], 0
     for name in docs:
+        check_portability = tracked_names is None or Path(name) in tracked_names
         source = unfenced((root/name).read_text(encoding='utf-8-sig'))
         source = re.sub(r'`+[^`\n]*`+', '', source)
         for match in LINK.finditer(source):
@@ -152,12 +147,14 @@ def audit(root=ROOT, scan_credentials=True):
                 continue
             path, fragment, absolute = local
             checked += 1
-            if name in tracked and absolute:
-                nonportable_targets.append({'file': name, 'target': target, 'reason': 'absolute local path'})
+            portability_reason = ('absolute local path' if absolute else
+                                  'backslash in local path' if '\\' in unquote(target.partition('#')[0]) else None)
+            if check_portability and portability_reason:
+                nonportable_targets.append({'file': name, 'target': target, 'reason': portability_reason})
             if not path.exists():
                 broken.append({'file': name, 'target': target, 'reason': 'missing file'})
                 continue
-            if name in tracked and path.is_file():
+            if tracked_names is not None and Path(name) in tracked_names and path.is_file():
                 tracked_file_links += 1
                 try:
                     relative_target = path.relative_to(root)
@@ -172,6 +169,24 @@ def audit(root=ROOT, scan_credentials=True):
                     cache[path] = anchors(path)
                 if fragment not in cache[path]:
                     broken.append({'file': name, 'target': target, 'reason': 'missing anchor'})
+
+    return {'local_links_checked': checked, 'broken_links_or_anchors': broken,
+            'external_links_skipped': external_skipped,
+            'tracked_file_links_checked': tracked_file_links,
+            'untracked_link_targets': untracked_targets,
+            'nonportable_link_targets': nonportable_targets}
+
+
+def audit(root=ROOT, scan_credentials=True):
+    root = Path(root).resolve()
+    if not root.is_dir():
+        raise AuditError('root_unavailable', '源码根目录不存在或不可访问；请检查--root。')
+    tracked = git(root, 'ls-files', '-z').stdout.decode('utf-8').split('\0')[:-1]
+    untracked = git(root, 'ls-files', '--others', '--exclude-standard', '-z').stdout.decode('utf-8').split('\0')[:-1]
+    worktree = sorted(set(tracked + untracked))
+    docs = [name for name in worktree if name.lower().endswith('.md')
+            and (root/name).is_file()]
+    links = audit_document_links(root, docs, tracked)
 
     ignore_errors = []
     for expect, paths in ((True, IGNORED_PATHS), (False, ALLOWED_PATHS)):
@@ -211,11 +226,7 @@ def audit(root=ROOT, scan_credentials=True):
             'tracked_files': len(tracked), 'untracked_files': len(untracked),
             'worktree_files': len(worktree), 'markdown_files': len(docs),
             'tracked_markdown_files': sum(name in tracked for name in docs),
-            'local_links_checked': checked, 'broken_links_or_anchors': broken,
-            'external_links_skipped': external_skipped,
-            'tracked_file_links_checked': tracked_file_links,
-            'untracked_link_targets': untracked_targets,
-            'nonportable_link_targets': nonportable_targets,
+            **links,
             'ignore_probes': len(IGNORED_PATHS)+len(ALLOWED_PATHS),
             'ignore_errors': ignore_errors, 'tracked_ignored': tracked_ignored,
             'tracked_restricted_files': [name for name in restricted if name in tracked],
