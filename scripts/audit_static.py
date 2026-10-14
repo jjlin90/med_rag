@@ -13,6 +13,13 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def static_link_issue(item):
+    """Rename the source field while retaining additional diagnostic fields."""
+    issue = dict(item)
+    issue['path'] = issue.pop('file')
+    return issue
+
+
 def audit_torch_installation():
     """Check wheel records against the installed build without loading native DLLs."""
     distributions = [dist for dist in metadata.distributions()
@@ -84,8 +91,7 @@ def audit():
             ROOT / 'web_demo/README.md', ROOT / 'frontend/README.md',
             *(ROOT / 'docs').rglob('*.md')]
     links = audit_document_links(ROOT, [path.relative_to(ROOT).as_posix() for path in docs])
-    broken = [{'path': item['file'], 'target': item['target'], 'reason': item['reason']}
-              for item in links['broken_links_or_anchors']]
+    broken = [static_link_issue(item) for item in links['broken_links_or_anchors']]
     deps = []
     try:
         from packaging.requirements import Requirement
@@ -112,11 +118,9 @@ def audit():
             'local_links_checked': links['local_links_checked'],
             'external_links_skipped': links['external_links_skipped'],
             'portability_scope': links['portability_scope'],
-            'nonportable_link_targets': [
-                {'path': item['file'], 'target': item['target'], 'reason': item['reason']}
-                for item in links['nonportable_link_targets']],
+            'nonportable_link_targets': [static_link_issue(item) for item in links['nonportable_link_targets']],
             'markdown_scope': 'root and frontend/web_demo READMEs, GETTING_STARTED and docs/**/*.md; includes untracked files, excludes model READMEs',
-            'link_check_scope': 'shared local path, file URI, anchor and portability checks; Git index membership is checked separately by audit_repository',
+            'link_check_scope': 'shared local path, file URI and anchor parser; portability applies to all scanned project Markdown including untracked drafts; audit_repository applies portability and Git index checks only to tracked Markdown',
             'dependency_errors': sorted(set(deps)), 'torch_build': torch_build,
             'installation_errors': torch_build['errors']}
 

@@ -50,6 +50,8 @@ HTTP/HTTPS、mailto、data等其他协议及 `//host/...` 网络链接不访问�
 
 静态报告的 `broken_local_links` 与 `nonportable_link_targets` 统一用 `path` 表示来源文档，另列 `target` 和 `reason`；仓库报告继续用 `file` 表示来源文档。对照两种报告时按字段映射和范围比较，不能只比较链接总数。
 
+静态审计的 `link_check_scope` 同时写明共享解析与可移植性范围，避免只读描述时误认为两工具约束同一批文档。问题条目映射采用复制后仅将 `file` 改名为 `path`，保留其余诊断字段，以免将来新增字段被截掉。
+
 默认模式保留新文档的工作区检查行为，但仍输出未跟踪及不可移植目标清单。发布前使用 `--require-tracked-links`：任一清单非空时，`tracked_link_requirement_met`为false，返回1。未跟踪草稿链接到另一份未跟踪草稿仍检查存在性与锚点，纳入Git后才要求其文件目标也在索引中。默认模式返回0不能单独证明链接目标可随Git交付；发布门控与包内容检查须分别完成。
 
 `--require-local-credentials`与跳过选项互斥：只有扫描状态为`checked_local_literal_values`且实际比对至少1个有效凭据值时，`credential_scan_requirement_met`才为true；没有本地.env或没有符合条件的值时返回1。默认模式仍允许无.env的克隆检查通过，并明确记录跳过状态。CI通过受保护的本地环境文件提供待核查值，文件按现有规则忽略。
