@@ -152,6 +152,42 @@ class RepositoryAuditTests(unittest.TestCase):
             self.assertEqual(code,0)
             self.assertEqual(repo['nonportable_link_targets'],[])
 
+    def test_static_json_retains_additional_link_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            target = (root/'README.md').as_posix()
+            (root/'README.md').write_text(
+                '[absolute](<'+target+'>)\n[missing](missing.md)\n', encoding='utf-8')
+            parse_links = audit_static.audit_document_links
+            reports = []
+            originals = []
+
+            def with_diagnostics(*args, **kwargs):
+                report = parse_links(*args, **kwargs)
+                for field in ('broken_links_or_anchors', 'nonportable_link_targets'):
+                    for item in report[field]:
+                        item['source_line'] = 2 if field == 'broken_links_or_anchors' else 1
+                        item['extra_detail'] = {'parser': 'shared', 'hints': ['check target']}
+                reports.append(report)
+                originals.append(json.loads(json.dumps(report)))
+                return report
+
+            with patch.object(audit_static, 'audit_document_links', side_effect=with_diagnostics):
+                report = json.loads(json.dumps(self.run_static_audit(root)))
+            self.assertEqual(reports, originals)
+            for static_field, shared_field in (
+                    ('broken_local_links', 'broken_links_or_anchors'),
+                    ('nonportable_link_targets', 'nonportable_link_targets')):
+                with self.subTest(field=static_field):
+                    source = originals[0][shared_field]
+                    self.assertTrue(source)
+                    expected = [dict(item, path=item['file']) for item in source]
+                    for item in expected:
+                        del item['file']
+                    self.assertEqual(report[static_field], expected)
+                    self.assertEqual(next(iter(report[static_field][0])), 'path')
+
     def test_static_and_repository_check_anchors_and_skip_code_examples(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

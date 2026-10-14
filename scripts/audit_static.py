@@ -15,9 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def static_link_issue(item):
     """Rename the source field while retaining additional diagnostic fields."""
-    issue = dict(item)
-    issue['path'] = issue.pop('file')
-    return issue
+    return {'path': item['file'],
+            **{key: value for key, value in item.items() if key != 'file'}}
 
 
 def audit_torch_installation():
