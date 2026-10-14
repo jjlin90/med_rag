@@ -26,6 +26,8 @@
 python scripts/audit_repository.py
 # 可选：把本次结果保存到忽略目录
 python scripts/audit_repository.py --output artifacts/repository_audit.json
+# 发布前额外要求：已跟踪文档的本地文件链接目标也已纳入Git
+python scripts/audit_repository.py --require-tracked-links
 # CI要求实际完成凭据比对时使用；根目录.env须有至少1个符合条件的凭据字面值
 python scripts/audit_repository.py --require-local-credentials
 ```
@@ -33,6 +35,10 @@ python scripts/audit_repository.py --require-local-credentials
 脚本核查已跟踪与未跟踪且未忽略的工作区文件：Markdown本地链接与锚点、本地凭据值及禁入产物。另检查忽略/保留规则及被忽略规则覆盖的已跟踪文件，不需要先暂存新文件。报告分别记录tracked_files、untracked_files、worktree_files及总Markdown数；静态检查只扫描项目文档，仓库检查还包含模型README，范围字段明确说明两者区别。output/pdf、tmp及独立MinerU环境增加忽略探针，新增源码/文档/测试增加保留探针。每次实际路径探针数见报告的 `ignore_probes`，本地链接及锚点数见 `local_links_checked`；新增路径或文档链接后须重新检查，历史计数不代表后续版本。核心检查只需要Python标准库和Git，无GPU、Docker、数据库或模型接口调用；Git提供已跟踪及未忽略新文件清单，因此仅解压源码包时需用`--root`指向对应Git源码工作区。退出码0表示已执行检查通过，1表示发现问题，2表示检查无法完成。默认不修改文件，只有指定`--output`才写报告。
 
 若根目录存在`.env`，使用项目依赖python-dotenv解析，其中名称包含API_KEY/PASSWORD/TOKEN/SECRET、长度至少8的非占位字面值在已跟踪及未跟踪且未忽略的工作区文件中逐字节比对；不展开变量引用，报告只给出命中文件与配置字段名，不输出凭据值。这是本地环境凭据值核查，范围不包含其他来源的未知密钥或历史提交。克隆后没有本地`.env`时明确标为`skipped_no_local_env`；如主动使用`--skip-local-credentials`则标为`skipped_by_option`，均不作为凭据扫描通过的证据。
+
+文件存在与可随Git交付分别检查：`broken_links_or_anchors`报告缺文件/缺锚点，`untracked_link_targets`报告已跟踪Markdown链接到现存但未纳入Git索引的本地文件（包括被忽略的文件），或解析到仓库外的相对文件目标。`tracked_file_links_checked`记录后者检查的文件链接数；目录链接不纳入这项文件检查，网络链接沿用跳过规则。对仓库内文件，目标路径按Git索引清单精确匹配，效果相当于检查 `git ls-files --error-unmatch`；已暂存的新文件也算已跟踪，这不证明已经提交、推送或进入分发包。
+
+默认模式保留新文档的工作区检查行为，但仍输出未跟踪目标清单。发布前使用 `--require-tracked-links`：该清单非空时，`tracked_link_requirement_met`为false，返回1。未跟踪草稿链接到另一份未跟踪草稿仍检查存在性与锚点，纳入Git后才要求其文件目标也在索引中。默认模式返回0不能单独证明链接目标可随Git交付；发布门控与包内容检查须分别完成。
 
 `--require-local-credentials`与跳过选项互斥：只有扫描状态为`checked_local_literal_values`且实际比对至少1个有效凭据值时，`credential_scan_requirement_met`才为true；没有本地.env或没有符合条件的值时返回1。默认模式仍允许无.env的克隆检查通过，并明确记录跳过状态。CI通过受保护的本地环境文件提供待核查值，文件按现有规则忽略。
 

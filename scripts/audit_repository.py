@@ -3,6 +3,7 @@
 在含Git索引的源码目录运行，无GPU、数据库或模型接口调用。
 默认只读；仅指定--output时写入报告。凭据检查不输出凭据值。
 检查已跟踪与未跟踪且未忽略的文件，不需要先暂存新文件。
+--require-tracked-links额外要求已跟踪Markdown的本地文件链接目标也在Git索引中。
 """
 import argparse
 import html
@@ -94,11 +95,13 @@ def audit(root=ROOT, scan_credentials=True):
     if not root.is_dir():
         raise AuditError('root_unavailable', '源码根目录不存在或不可访问；请检查--root。')
     tracked = git(root, 'ls-files', '-z').stdout.decode('utf-8').split('\0')[:-1]
+    tracked_names = {Path(name) for name in tracked}
     untracked = git(root, 'ls-files', '--others', '--exclude-standard', '-z').stdout.decode('utf-8').split('\0')[:-1]
     worktree = sorted(set(tracked + untracked))
     docs = [name for name in worktree if name.lower().endswith('.md')
             and (root/name).is_file()]
     broken, checked, cache = [], 0, {}
+    untracked_targets, tracked_file_links = [], 0
     for name in docs:
         source = unfenced((root/name).read_text(encoding='utf-8-sig'))
         source = re.sub(r'`+[^`\n]*`+', '', source)
@@ -112,7 +115,18 @@ def audit(root=ROOT, scan_credentials=True):
             checked += 1
             if not path.exists():
                 broken.append({'file': name, 'target': target, 'reason': 'missing file'})
-            elif fragment and path.suffix.lower() in ('.md', '.html', '.htm'):
+                continue
+            if name in tracked and path.is_file():
+                tracked_file_links += 1
+                try:
+                    relative_target = path.relative_to(root)
+                except ValueError:
+                    reason = 'outside repository'
+                else:
+                    reason = None if relative_target in tracked_names else 'not in Git index'
+                if reason:
+                    untracked_targets.append({'file': name, 'target': target, 'reason': reason})
+            if fragment and path.suffix.lower() in ('.md', '.html', '.htm'):
                 if path not in cache:
                     cache[path] = anchors(path)
                 if fragment not in cache[path]:
@@ -157,6 +171,8 @@ def audit(root=ROOT, scan_credentials=True):
             'worktree_files': len(worktree), 'markdown_files': len(docs),
             'tracked_markdown_files': sum(name in tracked for name in docs),
             'local_links_checked': checked, 'broken_links_or_anchors': broken,
+            'tracked_file_links_checked': tracked_file_links,
+            'untracked_link_targets': untracked_targets,
             'ignore_probes': len(IGNORED_PATHS)+len(ALLOWED_PATHS),
             'ignore_errors': ignore_errors, 'tracked_ignored': tracked_ignored,
             'tracked_restricted_files': [name for name in restricted if name in tracked],
@@ -170,6 +186,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT, help='含Git索引的源码仓库根目录')
     parser.add_argument('--output', type=Path, help='可选JSON报告路径，建议放在artifacts目录')
+    parser.add_argument('--require-tracked-links', action='store_true',
+                        help='发布门控：已跟踪Markdown的本地文件链接目标必须在Git索引中，否则退出1')
     credentials = parser.add_mutually_exclusive_group()
     credentials.add_argument('--skip-local-credentials', action='store_true', help='明确跳过本地.env凭据值比对，报告标明未检查')
     credentials.add_argument('--require-local-credentials', action='store_true', help='CI门控：要求实际完成本地.env扫描且至少比对1个有效字面值，否则退出1')
@@ -189,6 +207,10 @@ def main():
         print('核查无法完成 [audit_runtime_error]：审计执行失败。', file=sys.stderr)
         return 2
     result['credentials_required'] = args.require_local_credentials
+    result['tracked_links_required'] = args.require_tracked_links
+    result['tracked_link_requirement_met'] = (
+        not args.require_tracked_links or not result['untracked_link_targets']
+    )
     result['credential_scan_requirement_met'] = (
         not args.require_local_credentials
         or result['credential_scan_status'] == 'checked_local_literal_values'
@@ -203,7 +225,8 @@ def main():
         except OSError:
             print('报告写入失败 [report_write_error]：请指定可写的输出路径。', file=sys.stderr)
             return 2
-    return int(not result['credential_scan_requirement_met'] or any(result[key] for key in (
+    return int(not result['credential_scan_requirement_met']
+               or not result['tracked_link_requirement_met'] or any(result[key] for key in (
         'broken_links_or_anchors', 'ignore_errors', 'tracked_ignored',
         'tracked_restricted_files', 'untracked_restricted_files', 'local_credential_matches')))
 
