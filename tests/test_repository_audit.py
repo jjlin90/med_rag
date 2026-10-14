@@ -122,7 +122,9 @@ class RepositoryAuditTests(unittest.TestCase):
                 {'path':item['file'],'target':item['target'],'reason':item['reason']}
                 for item in repo['broken_links_or_anchors']])
             self.assertEqual(static['local_links_checked'],repo['local_links_checked'])
-            self.assertEqual(static['nonportable_link_targets'],repo['nonportable_link_targets'])
+            self.assertEqual(static['nonportable_link_targets'],[
+                {'path':item['file'],'target':item['target'],'reason':item['reason']}
+                for item in repo['nonportable_link_targets']])
 
     def test_raw_and_encoded_backslash_paths_fail_delivery_gate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -139,7 +141,9 @@ class RepositoryAuditTests(unittest.TestCase):
                 {'file':'README.md','target':target,'reason':'backslash in local path'} for target in targets])
             self.assertEqual(code,1)
             static = self.run_static_audit(root)
-            self.assertEqual(static['nonportable_link_targets'],repo['nonportable_link_targets'])
+            self.assertEqual(static['nonportable_link_targets'],[
+                {'path':item['file'],'target':item['target'],'reason':item['reason']}
+                for item in repo['nonportable_link_targets']])
             with patch.object(audit_static,'audit',return_value=static), \
                     patch('sys.argv',['audit_static.py']), redirect_stdout(io.StringIO()):
                 self.assertEqual(audit_static.main(),1)
@@ -165,6 +169,36 @@ class RepositoryAuditTests(unittest.TestCase):
                 {'file':'README.md','target':'#missing','reason':'missing anchor'}])
             self.assertEqual(static['local_links_checked'],repo['local_links_checked'])
             self.assertEqual(static['external_links_skipped'],1)
+
+    def test_untracked_draft_portability_scopes_are_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            (root/'docs').mkdir()
+            target = (root/'README.md').as_posix()+'#existing'
+            draft = root/'docs'/'draft.md'
+            draft.write_text('[readme](<'+target+'>)\n',encoding='utf-8')
+            static = self.run_static_audit(root)
+            code, repo = self.run_link_gate(root)
+            self.assertEqual(static['portability_scope'],'all_scanned_markdown')
+            self.assertEqual(repo['portability_scope'],'tracked_markdown_only')
+            self.assertEqual(static['nonportable_link_targets'],[
+                {'path':'docs/draft.md','target':target,'reason':'absolute local path'}])
+            self.assertEqual(repo['nonportable_link_targets'],[])
+            self.assertEqual(code,0)
+            with patch.object(audit_static,'audit',return_value=static), \
+                    patch('sys.argv',['audit_static.py']), redirect_stdout(io.StringIO()):
+                self.assertEqual(audit_static.main(),1)
+            subprocess.run(['git','add','docs/draft.md'],cwd=root,check=True,capture_output=True)
+            code, repo = self.run_link_gate(root)
+            self.assertEqual(code,1)
+            self.assertEqual(repo['nonportable_link_targets'],[
+                {'file':'docs/draft.md','target':target,'reason':'absolute local path'}])
+            draft.write_text('[readme](../README.md#existing)\n',encoding='utf-8')
+            code, repo = self.run_link_gate(root)
+            self.assertEqual(code,0)
+            self.assertEqual(repo['nonportable_link_targets'],[])
+            self.assertEqual(self.run_static_audit(root)['nonportable_link_targets'],[])
 
     def test_absolute_tracked_file_is_checked_but_not_portable(self):
         with tempfile.TemporaryDirectory() as directory:

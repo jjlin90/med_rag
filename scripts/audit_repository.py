@@ -171,6 +171,7 @@ def audit_document_links(root, docs, tracked=None):
                     broken.append({'file': name, 'target': target, 'reason': 'missing anchor'})
 
     return {'local_links_checked': checked, 'broken_links_or_anchors': broken,
+            'portability_scope': 'all_scanned_markdown' if tracked_names is None else 'tracked_markdown_only',
             'external_links_skipped': external_skipped,
             'tracked_file_links_checked': tracked_file_links,
             'untracked_link_targets': untracked_targets,

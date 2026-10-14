@@ -111,7 +111,10 @@ def audit():
             'markdown_files': len(docs), 'broken_local_links': broken,
             'local_links_checked': links['local_links_checked'],
             'external_links_skipped': links['external_links_skipped'],
-            'nonportable_link_targets': links['nonportable_link_targets'],
+            'portability_scope': links['portability_scope'],
+            'nonportable_link_targets': [
+                {'path': item['file'], 'target': item['target'], 'reason': item['reason']}
+                for item in links['nonportable_link_targets']],
             'markdown_scope': 'root and frontend/web_demo READMEs, GETTING_STARTED and docs/**/*.md; includes untracked files, excludes model READMEs',
             'link_check_scope': 'shared local path, file URI, anchor and portability checks; Git index membership is checked separately by audit_repository',
             'dependency_errors': sorted(set(deps)), 'torch_build': torch_build,
