@@ -3,7 +3,7 @@
 在含Git索引的源码目录运行，无GPU、数据库或模型接口调用。
 默认只读；仅指定--output时写入报告。凭据检查不输出凭据值。
 检查已跟踪与未跟踪且未忽略的文件，不需要先暂存新文件。
---require-tracked-links额外要求已跟踪Markdown的本地文件链接目标也在Git索引中。
+--require-tracked-links额外要求已跟踪Markdown使用可移植的本地链接，文件目标在Git索引中。
 """
 import argparse
 import html
@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 import unicodedata
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 IGNORED_PATHS = (
@@ -55,6 +55,10 @@ class AuditError(RuntimeError):
         self.code = code
 
 
+class LocalLinkError(ValueError):
+    """只携带固定的本地链接格式说明，不回显底层异常。"""
+
+
 def git(root, *arguments, allowed_codes=(0,)):
     try:
         result = subprocess.run(['git', *arguments], cwd=root, capture_output=True)
@@ -90,6 +94,34 @@ def anchors(path):
     return result
 
 
+def local_link_target(document, target):
+    """解析本地目标；网络/其他协议返回None，不访问远程文件系统。"""
+    file_uri = target.lower().startswith('file:')
+    if file_uri:
+        uri = urlsplit(target)
+        if (uri.netloc.lower() not in ('', 'localhost') or uri.query
+                or not uri.path.startswith('/')):
+            raise LocalLinkError('unsupported file URI')
+        filename, fragment = unquote(uri.path), unquote(uri.fragment)
+        if re.match(r'^/[A-Za-z]:', filename):
+            filename = filename[1:]
+    else:
+        # Recognize Windows drive paths before the generic URI scheme rule.
+        if not re.match(r'^[A-Za-z]:', target) and (
+                re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', target) or target.startswith('//')):
+            return None
+        filename, _, fragment = target.partition('#')
+        filename, fragment = unquote(filename), unquote(fragment)
+    if filename.startswith(('\\\\', '//')):
+        raise LocalLinkError('unsupported network filesystem path')
+    windows_drive = bool(re.match(r'^[A-Za-z]:', filename))
+    if windows_drive and sys.platform != 'win32':
+        raise LocalLinkError('Windows local path unavailable on this host')
+    absolute = file_uri or windows_drive or Path(filename).is_absolute() or filename.startswith(('\\', '/'))
+    path = (document.parent/filename).resolve() if filename else document.resolve()
+    return path, fragment, absolute
+
+
 def audit(root=ROOT, scan_credentials=True):
     root = Path(root).resolve()
     if not root.is_dir():
@@ -101,18 +133,27 @@ def audit(root=ROOT, scan_credentials=True):
     docs = [name for name in worktree if name.lower().endswith('.md')
             and (root/name).is_file()]
     broken, checked, cache = [], 0, {}
+    nonportable_targets, external_skipped = [], 0
     untracked_targets, tracked_file_links = [], 0
     for name in docs:
         source = unfenced((root/name).read_text(encoding='utf-8-sig'))
         source = re.sub(r'`+[^`\n]*`+', '', source)
         for match in LINK.finditer(source):
             target = match[1].strip('<>')
-            if re.match(r'\w+:', target) or target.startswith('//'):
+            try:
+                local = local_link_target(root/name, target)
+            except ValueError as exc:
+                checked += 1
+                reason = str(exc) if isinstance(exc, LocalLinkError) else 'invalid local link'
+                broken.append({'file': name, 'target': target, 'reason': reason})
                 continue
-            filename, _, fragment = target.partition('#')
-            filename, fragment = unquote(filename), unquote(fragment)
-            path = ((root/name).parent/filename).resolve() if filename else root/name
+            if local is None:
+                external_skipped += 1
+                continue
+            path, fragment, absolute = local
             checked += 1
+            if name in tracked and absolute:
+                nonportable_targets.append({'file': name, 'target': target, 'reason': 'absolute local path'})
             if not path.exists():
                 broken.append({'file': name, 'target': target, 'reason': 'missing file'})
                 continue
@@ -171,8 +212,10 @@ def audit(root=ROOT, scan_credentials=True):
             'worktree_files': len(worktree), 'markdown_files': len(docs),
             'tracked_markdown_files': sum(name in tracked for name in docs),
             'local_links_checked': checked, 'broken_links_or_anchors': broken,
+            'external_links_skipped': external_skipped,
             'tracked_file_links_checked': tracked_file_links,
             'untracked_link_targets': untracked_targets,
+            'nonportable_link_targets': nonportable_targets,
             'ignore_probes': len(IGNORED_PATHS)+len(ALLOWED_PATHS),
             'ignore_errors': ignore_errors, 'tracked_ignored': tracked_ignored,
             'tracked_restricted_files': [name for name in restricted if name in tracked],
@@ -187,7 +230,7 @@ def main():
     parser.add_argument('--root', type=Path, default=ROOT, help='含Git索引的源码仓库根目录')
     parser.add_argument('--output', type=Path, help='可选JSON报告路径，建议放在artifacts目录')
     parser.add_argument('--require-tracked-links', action='store_true',
-                        help='发布门控：已跟踪Markdown的本地文件链接目标必须在Git索引中，否则退出1')
+                        help='发布门控：已跟踪Markdown须使用可移植的本地链接，文件目标须在Git索引中，否则退出1')
     credentials = parser.add_mutually_exclusive_group()
     credentials.add_argument('--skip-local-credentials', action='store_true', help='明确跳过本地.env凭据值比对，报告标明未检查')
     credentials.add_argument('--require-local-credentials', action='store_true', help='CI门控：要求实际完成本地.env扫描且至少比对1个有效字面值，否则退出1')
@@ -209,7 +252,8 @@ def main():
     result['credentials_required'] = args.require_local_credentials
     result['tracked_links_required'] = args.require_tracked_links
     result['tracked_link_requirement_met'] = (
-        not args.require_tracked_links or not result['untracked_link_targets']
+        not args.require_tracked_links
+        or not result['untracked_link_targets'] and not result['nonportable_link_targets']
     )
     result['credential_scan_requirement_met'] = (
         not args.require_local_credentials

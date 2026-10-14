@@ -13,6 +13,16 @@ from scripts.audit_repository import audit
 
 
 class RepositoryAuditTests(unittest.TestCase):
+    def run_link_gate(self, root):
+        output = io.StringIO()
+        args = ['audit_repository.py','--root',str(root),
+                '--skip-local-credentials','--require-tracked-links']
+        with patch.object(audit_repository,'IGNORED_PATHS',()), \
+                patch.object(audit_repository,'ALLOWED_PATHS',()), \
+                patch('sys.argv',args), redirect_stdout(output):
+            code = audit_repository.main()
+        return code, json.loads(output.getvalue())
+
     def initialize(self, root):
         subprocess.run(['git','init',str(root)],check=True,capture_output=True)
         (root/'README.md').write_text('# Existing\n',encoding='utf-8')
@@ -82,6 +92,75 @@ class RepositoryAuditTests(unittest.TestCase):
             self.assertEqual(report['broken_links_or_anchors'],[])
             self.assertEqual(report['tracked_file_links_checked'],0)
             self.assertEqual(report['untracked_link_targets'],[])
+
+    def test_absolute_tracked_file_is_checked_but_not_portable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            path = root/'extra.md'
+            path.write_text('# Extra\n',encoding='utf-8')
+            subprocess.run(['git','add','extra.md'],cwd=root,check=True,capture_output=True)
+            target = path.as_posix()+'#extra'
+            (root/'README.md').write_text('[extra](<'+target+'>)\n',encoding='utf-8')
+            code, report = self.run_link_gate(root)
+            self.assertEqual(report['local_links_checked'],1)
+            self.assertEqual(report['tracked_file_links_checked'],1)
+            self.assertEqual(report['broken_links_or_anchors'],[])
+            self.assertEqual(report['untracked_link_targets'],[])
+            self.assertEqual(report['nonportable_link_targets'],[
+                {'file':'README.md','target':target,'reason':'absolute local path'}])
+            self.assertFalse(report['tracked_link_requirement_met'])
+            self.assertEqual(code,1)
+
+    def test_local_file_uris_check_encoded_paths_anchors_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            path = root/'extra file.md'
+            path.write_text('# Some heading\n',encoding='utf-8')
+            missing = root/'missing.md'
+            for uri in (path.as_uri(),path.as_uri().replace('file:///','file://localhost/')):
+                with self.subTest(uri=uri):
+                    target = uri+'#some-heading'
+                    (root/'README.md').write_text(
+                        '[extra]('+target+')\n[missing]('+missing.as_uri()+')\n',encoding='utf-8')
+                    code, report = self.run_link_gate(root)
+                    self.assertEqual(report['local_links_checked'],2)
+                    self.assertEqual(report['tracked_file_links_checked'],1)
+                    self.assertEqual(report['untracked_link_targets'],[
+                        {'file':'README.md','target':target,'reason':'not in Git index'}])
+                    self.assertEqual(report['broken_links_or_anchors'],[
+                        {'file':'README.md','target':missing.as_uri(),'reason':'missing file'}])
+                    self.assertEqual(len(report['nonportable_link_targets']),2)
+                    self.assertEqual(code,1)
+
+    def test_external_urls_are_skipped_but_unsupported_file_uris_are_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.initialize(root)
+            targets = ('https://example.invalid/a','http://example.invalid/b',
+                       'mailto:example@example.invalid','//example.invalid/a',
+                       'data:text/plain,example')
+            (root/'README.md').write_text('# Existing\n[self](#existing)\n'+
+                '\n'.join('[external]('+target+')' for target in targets),encoding='utf-8')
+            code, report = self.run_link_gate(root)
+            self.assertEqual(code,0)
+            self.assertEqual(report['local_links_checked'],1)
+            self.assertEqual(report['external_links_skipped'],len(targets))
+            self.assertEqual(report['nonportable_link_targets'],[])
+            unsupported = {
+                'file://server/share/private.md':'unsupported file URI',
+                'file:relative.md':'unsupported file URI',
+                'file:////server/share/private.md':'unsupported network filesystem path',
+            }
+            for uri, reason in unsupported.items():
+                with self.subTest(uri=uri):
+                    (root/'README.md').write_text('[file]('+uri+')\n',encoding='utf-8')
+                    code, report = self.run_link_gate(root)
+                    self.assertEqual(code,1)
+                    self.assertEqual(report['external_links_skipped'],0)
+                    self.assertEqual(report['broken_links_or_anchors'],[
+                        {'file':'README.md','target':uri,'reason':reason}])
 
     def test_tracked_link_gate_rejects_ignored_target_then_accepts_tracked_file(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -38,7 +38,11 @@ python scripts/audit_repository.py --require-local-credentials
 
 文件存在与可随Git交付分别检查：`broken_links_or_anchors`报告缺文件/缺锚点，`untracked_link_targets`报告已跟踪Markdown链接到现存但未纳入Git索引的本地文件（包括被忽略的文件），或解析到仓库外的相对文件目标。`tracked_file_links_checked`记录后者检查的文件链接数；目录链接不纳入这项文件检查，网络链接沿用跳过规则。对仓库内文件，目标路径按Git索引清单精确匹配，效果相当于检查 `git ls-files --error-unmatch`；已暂存的新文件也算已跟踪，这不证明已经提交、推送或进入分发包。
 
-默认模式保留新文档的工作区检查行为，但仍输出未跟踪目标清单。发布前使用 `--require-tracked-links`：该清单非空时，`tracked_link_requirement_met`为false，返回1。未跟踪草稿链接到另一份未跟踪草稿仍检查存在性与锚点，纳入Git后才要求其文件目标也在索引中。默认模式返回0不能单独证明链接目标可随Git交付；发布门控与包内容检查须分别完成。
+2026-10-14后续修订：Windows盘符路径（如 `D:/...`）、本机绝对路径和本机 `file:///...` / `file://localhost/...` 文件链接现在检查存在性及锚点，并支持百分号编码的路径。已跟踪文档使用绝对本地链接时另记入 `nonportable_link_targets`，即使目标文件已纳入Git，也不能依赖另一个克隆者使用同一磁盘路径；发布时应改为仓库相对链接。发布门控要求未跟踪目标和不可移植目标两份清单都为空；普通工作区模式仍报告两份清单。
+
+HTTP/HTTPS、mailto、data等其他协议及 `//host/...` 网络链接不访问，数量写入 `external_links_skipped`，本地审计通过不代表这些外部目标可用。远程主机的file URI、网络文件系统路径及不支持的file URI格式直接记录为检查问题并返回1，不静默跳过，也不尝试访问远程共享。Windows盘符路径在非Windows环境无法核验时同样报告问题。目录链接仍不做Git文件索引归属检查，但绝对目录链接会进入不可移植清单。
+
+默认模式保留新文档的工作区检查行为，但仍输出未跟踪及不可移植目标清单。发布前使用 `--require-tracked-links`：任一清单非空时，`tracked_link_requirement_met`为false，返回1。未跟踪草稿链接到另一份未跟踪草稿仍检查存在性与锚点，纳入Git后才要求其文件目标也在索引中。默认模式返回0不能单独证明链接目标可随Git交付；发布门控与包内容检查须分别完成。
 
 `--require-local-credentials`与跳过选项互斥：只有扫描状态为`checked_local_literal_values`且实际比对至少1个有效凭据值时，`credential_scan_requirement_met`才为true；没有本地.env或没有符合条件的值时返回1。默认模式仍允许无.env的克隆检查通过，并明确记录跳过状态。CI通过受保护的本地环境文件提供待核查值，文件按现有规则忽略。
 
